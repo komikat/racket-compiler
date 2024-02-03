@@ -13,9 +13,9 @@
 (define (uniquify-exp env)    ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
-      [(Var x) (Var x)]
+      [(Var x) (Var (dict-ref env x))]
       [(Int n) (Int n)]
-      [(Let x e body) (Let x e body)]
+      [(Let x e body) (let [(x-uniq (gensym))] (Let x-uniq e ((uniquify-exp (dict-set env x x-uniq)) body)))]
       [(Prim op es)
        (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
 
@@ -54,7 +54,7 @@
 (define compiler-passes
   `(
      ;; Uncomment the following passes as you finish them.
-     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+     ("uniquify", uniquify, interp-Lvar, type-check-Lvar)
      ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ;; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
@@ -62,3 +62,9 @@
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
+
+
+; (uniquify (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
+; (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Int 43) (Var 'x))))))
+; (interp-Lvar (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Let 'x (Int 50) (Prim '+ (list (Var 'x) (Int 10)))) (Var 'x)))))))
+
