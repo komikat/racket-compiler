@@ -10,7 +10,7 @@
 (provide (all-defined-out))
 
 
-(define (uniquify-exp env)    ;; TODO: this function currently does nothing. Your code goes here
+(define (uniquify-exp env)
   (lambda (e)
     (match e
       [(Var x) (Var (dict-ref env x))]
