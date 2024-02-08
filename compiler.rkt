@@ -26,9 +26,42 @@
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
+(define (rco-exp env)
+  (lambda (e)
+    (match e 
+      [(Int n) e]
+      [(Var x) e]
+      [(Prim '- (list (Int n))) e]
+      [(Prim '- (list (Var x))) e]
+      [(Prim '+ (list (Int n1) (Int n2))) e]
+      [(Prim '+ (list (Int n1) (Var x2))) e]
+      [(Prim '+ (list (Var x1) (Int n2))) e]
+      [(Prim '+ (list (Var x1) (Var x2))) e]
+      [(Prim '- (list (Int n1) (Int n2))) e]
+      [(Prim '- (list (Int n1) (Var x2))) e]
+      [(Prim '- (list (Var x1) (Int n2))) e]
+      [(Prim '- (list (Var x1) (Var x2))) e]
+      [(Let x e body) (Let x ((rco-exp env) e) ((rco-exp env) body))]
+      [(Prim '- (list e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x)))))]
+      [(Prim '+ (list (Int n1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Int n1) (Var x)))))]
+      [(Prim '+ (list (Var x1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Var x1) (Var x)))))]
+      [(Prim '+ (list e2 (Int n1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Var x) (Int n1)))))]
+      [(Prim '+ (list e2 (Var x1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Var x) (Var x1)))))]
+      [(Prim '+ (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2)) (Prim '+ (list (Var x) (Var y))))))]
+      [(Prim '- (list (Int n1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Int n1) (Var x)))))]
+      [(Prim '- (list (Var x1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x1) (Var x)))))]
+      [(Prim '- (list e2 (Int n1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x) (Int n1)))))]
+      [(Prim '- (list e2 (Var x1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x) (Var x1)))))]
+      [(Prim '- (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2)) (Prim '- (list (Var x) (Var y))))))])))
+
+(define (rco-atom env)
+  (lambda (e)
+    (let [(x-uniq (gensym))] (dict-set env x-uniq e) x-uniq)))
+
 ;; remove-complex-opera* : Lvar -> Lvar^mon
 (define (remove-complex-opera* p)
-  (error "TODO: code goes here (remove-complex-opera*)"))
+  (match p
+    [(Program info e) (Program info ((rco-exp '()) e))]))
 
 (define (explicate_tail e)
   (match e
@@ -74,7 +107,7 @@
   `(
      ;; Uncomment the following passes as you finish them.
      ("uniquify", uniquify, interp-Lvar, type-check-Lvar)
-     ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control", explicate-control, interp-Cvar, type-check-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
