@@ -1,0 +1,19 @@
+name: Makefile CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Setup Racket environment
+      uses: Bogdanp/setup-racket@v1.11
+
+    - name: Run check
+      run: racket run-tests.rkt
