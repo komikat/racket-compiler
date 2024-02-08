@@ -7,13 +7,15 @@ on:
     branches: [ "master" ]
 
 jobs:
-  build:
+  test:
 
     runs-on: ubuntu-latest
-
     steps:
     - name: Setup Racket environment
       uses: Bogdanp/setup-racket@v1.11
-
+      with:
+        architecture: 'x64'
+        distribution: 'full'
+        version: 8.11.1
     - name: Run check
       run: racket run-tests.rkt
