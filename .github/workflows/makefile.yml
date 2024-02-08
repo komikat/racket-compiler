@@ -11,15 +11,15 @@ jobs:
 
     runs-on: ubuntu-latest
     steps:
+    - name: Checkout
+      uses: actions/checkout@v2
     - name: Setup Racket environment
       uses: Bogdanp/setup-racket@v1.11
       with:
         architecture: 'x64'
         distribution: 'full'
         version: 8.11.1
-
     - name: Check files
-      run: ls
-      
+      run: test -e path/to/file && echo "Test file exists" || echo "Test file does not exist"
     - name: Run check
       run: racket run-tests.rkt
