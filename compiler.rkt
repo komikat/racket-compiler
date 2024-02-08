@@ -28,32 +28,16 @@
 
 (define (rco-exp env)
   (lambda (e)
-    (match e 
-      [(Int n) e]
-      [(Var x) e]
-      [(Prim '- (list (Int n))) e]
-      [(Prim '- (list (Var x))) e]
-      [(Prim '+ (list (Int n1) (Int n2))) e]
-      [(Prim '+ (list (Int n1) (Var x2))) e]
-      [(Prim '+ (list (Var x1) (Int n2))) e]
-      [(Prim '+ (list (Var x1) (Var x2))) e]
-      [(Prim '- (list (Int n1) (Int n2))) e]
-      [(Prim '- (list (Int n1) (Var x2))) e]
-      [(Prim '- (list (Var x1) (Int n2))) e]
-      [(Prim '- (list (Var x1) (Var x2))) e]
+    (match e
       [(Let x e body) (Let x ((rco-exp env) e) ((rco-exp env) body))]
+      [(or (Int _) (Var _)) e]
+      [(Prim '- (list (or (Int _) (Var _)))) e]
+      [(Prim (or '- '+) (list (or (Int _) (Var _)) (or (Var _) (Int _)))) e]
       [(Prim '- (list e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x)))))]
-      [(Prim '+ (list (Int n1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Int n1) (Var x)))))]
-      [(Prim '+ (list (Var x1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Var x1) (Var x)))))]
-      [(Prim '+ (list e2 (Int n1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Var x) (Int n1)))))]
-      [(Prim '+ (list e2 (Var x1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '+ (list (Var x) (Var x1)))))]
-      [(Prim '+ (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2)) (Prim '+ (list (Var x) (Var y))))))]
-      [(Prim '- (list (Int n1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Int n1) (Var x)))))]
-      [(Prim '- (list (Var x1) e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x1) (Var x)))))]
-      [(Prim '- (list e2 (Int n1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x) (Int n1)))))]
-      [(Prim '- (list e2 (Var x1))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x) (Var x1)))))]
-      [(Prim '- (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2)) (Prim '- (list (Var x) (Var y))))))])))
-
+      [(Prim op (list e1 e2)) #:when (and (or (Int? e1) (Var? e1)) (or (eq? op '-) (eq? op '+))) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list e1 (Var x)))))]
+      [(Prim op (list e1 e2)) #:when (and (or (Int? e2) (Var? e2)) (or (eq? op '-) (eq? op '+))) (let [(x ((rco-atom env) e1))] (Let x ((rco-exp env) e1) (Prim op (list (Var x) e2))))]
+      [(Prim op (list e1 e2)) #:when (or (eq? op '-) (eq? op '+)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2)) (Prim op (list (Var x) (Var y))))))])))
+      
 (define (rco-atom env)
   (lambda (e)
     (let [(x-uniq (gensym))] (dict-set env x-uniq e) x-uniq)))
