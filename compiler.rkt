@@ -15,7 +15,9 @@
     (match e
       [(Var x) (Var (dict-ref env x))]
       [(Int n) (Int n)]
-      [(Let x e body) (let [(x-uniq (gensym))] (Let x-uniq e ((uniquify-exp (dict-set env x x-uniq)) body)))]
+      [(Let x e body) (let [(x-uniq (gensym))]
+                        (let [(new-uniq-pass (uniquify-exp (dict-set env x x-uniq)))]
+                          (Let x-uniq (new-uniq-pass e) (new-uniq-pass body))))]
       [(Prim op es)
        (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
 
@@ -28,9 +30,26 @@
 (define (remove-complex-opera* p)
   (error "TODO: code goes here (remove-complex-opera*)"))
 
+(define (explicate_tail e)
+  (match e
+    [(Var x) (Return (Var x))]
+    [(Int n) (Return (Int n))]
+    [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
+    [(Prim op es) (Return (Prim op es))]
+    [else (error "explicate_tail unhandled case" e)]))
+
+(define (explicate_assign e x cont)
+  (match e
+    [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
+    [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
+    [(Let y rhs body) (explicate_assign rhs y (explicate_assign body x cont))]
+    [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
+    [else (error "explicate_assign unhandled case" e)]))
+
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
-  (error "TODO: code goes here (explicate-control)"))
+  (match p
+    [(Program info body) (CProgram info `((start . ,(explicate_tail body))))]))
 
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
@@ -56,15 +75,16 @@
      ;; Uncomment the following passes as you finish them.
      ("uniquify", uniquify, interp-Lvar, type-check-Lvar)
      ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-     ;; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
+     ("explicate control", explicate-control, interp-Cvar, type-check-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
 
-
+; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (uniquify (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Int 43) (Var 'x))))))
 ; (interp-Lvar (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Let 'x (Int 50) (Prim '+ (list (Var 'x) (Int 10)))) (Var 'x)))))))
+
 
