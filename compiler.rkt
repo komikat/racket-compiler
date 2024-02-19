@@ -32,6 +32,7 @@
     (match e
       [(Let x e body) (Let x ((rco-exp env) e) ((rco-exp env) body))]
       [(or (Int _) (Var _)) e]
+      [(Prim 'read '()) (Prim 'read '())]
       [(Prim '- (list (or (Int _) (Var _)))) e]
       [(Prim (or '- '+) (list (or (Int _) (Var _)) (or (Var _) (Int _)))) e]
       [(Prim '- (list e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim '- (list (Var x)))))]
@@ -94,22 +95,25 @@
   (match e
     [(Assign x (Int n)) (list (Instr 'movq (list (Imm n) x)))]
     [(Assign x (Var y)) (list (Instr 'movq (list (Var y) x)))]
-    [(Assign x (Prim 'read '())) (list (Instr 'callq 'read_int) (Instr 'movq (list (Reg 'rax) x)))]
     [(Assign x (Prim '- (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'negq (list x)))]
     [(Assign x (Prim '+ (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'addq (list (select_atm atm2) x)))]
-    [(Assign x (Prim '- (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'subq (list (select_atm atm2) x)))]))
+    [(Assign x (Prim '- (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'subq (list (select_atm atm2) x)))]
+    [(Assign x (Prim 'read arg)) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]
+    ))
 
 (define (select_tail e)
   (match e
     [(Seq stmt tail) (append (select_stmt stmt) (select_tail tail))]
     [(Return ex) (append (select_stmt (Assign (Reg 'rax) ex)) (list (Jmp 'conclusion)))]))
 
+;; stack space
+(define (assign-stack-space info)
+  (cons (cons 'stack-space (* 16  (+ 1 (quotient (length (cdr (assoc 'locals-types info))) 2)))) info))
+
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
   (match p
-    [(CProgram info body) (X86Program info `((start . ,(Block info (select_tail (cdr (car body)))))))]))
-
-
+    [(CProgram info body) (X86Program (assign-stack-space info) `((start . ,(Block info (select_tail (cdr (car body)))))))]))
 
 ;; assign variables in list from info to a hash map with stack locations
 (define (assign-stack list-vars)
@@ -120,12 +124,6 @@
     var-hashmap
     )
 )
-
-;; stack space
-(define (assign-stack-space info)
-  (cons (cons 'stack-space (* 8 (+ 1 (length (cdr (assoc 'locals-types info)))))) info))
-
-
 
 ;; take variables inside body and then replace them with their
 ;; corresponding entries in the hashmap
@@ -146,29 +144,65 @@
      (X86Program (assign-stack-space info) (list (cons 'start (Block bl-info (replace-var body (assign-stack (cdr (assoc 'locals-types info))))))))]
     [else p]))
 
+(define (patch_instr body)
+  (foldr (lambda (inst lst)
+           (match inst
+             [(Instr instr (list (Deref 'rbp n1) (Deref 'rbp n2))) 
+              (append (list (Instr 'movq (list (Deref 'rbp n1) (Reg 'rax))) (Instr instr (list (Reg 'rax) (Deref 'rbp n2)))) lst)]
+             [(Instr instr (list (Imm n)))
+              #:when (> n 2e16)
+              (append (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr instr (list (Reg 'rax)))) lst)]
+             [(Instr instr (list (Imm n) atm))
+              #:when (> n 2e16)
+              (append (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr instr (list (Reg 'rax) atm))) lst)]
+             [(Instr instr (list atm (Imm n)))
+              #:when (> n 2e16)
+              (append (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr instr (list atm (Reg 'rax)))) lst)]
+             [else (cons inst lst)])) '() body))
 
 ;; patch-instructions : x86var -> x86int
 (define (patch-instructions p)
-  (error "TODO: code goes here (patch-instructions)"))
+   (match p
+     [(X86Program info (list (cons 'start (Block bl-info body)))) (X86Program info (list (cons 'start (Block bl-info (patch_instr body)))))]))
+
+;; check system and spit out the correct label
+(define (correct-label str)
+  (string->uninterned-symbol (if (eq? (system-type 'os) 'macosx)
+                                 (string-append "" str)
+                                 str)))
+;; add prelude to the body
+(define (preludify stack-space body)
+  (append body (list `(main . ,(Block '() (list (Instr 'pushq (list (Reg 'rbp)))
+                                                              (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
+                                                              (Instr 'subq (list (Imm stack-space) (Reg 'rsp)))
+                                                              (Jmp 'start)))))))
+;; add conclusion to the body
+(define (concludify stack-space body)
+  (append body (list `(conclusion . ,(Block '() (list (Instr 'addq (list (Imm stack-space) (Reg 'rsp)))
+                                                                    (Instr 'popq (list (Reg 'rbp)))
+                                                                    (Retq)))))))
+
 
 ;; prelude-and-conclusion : x86int -> x86int
 (define (prelude-and-conclusion p)
-  (error "TODO: code goes here (prelude-and-conclusion)"))
+  (match p
+    [(X86Program info body) (let [(stack-space (cdr (assoc 'stack-space info)))]
+                              (X86Program info
+                                          (concludify stack-space
+                                                     (preludify stack-space body))))]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes
   `(
-     ;; Uncomment the following passes as you finish them.
-     ("uniquify", uniquify, interp-Lvar, type-check-Lvar)
+     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-     ("explicate control", explicate-control, interp-Cvar, type-check-Cvar)
+     ("explicate control" ,explicate-control, interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
      ("assign homes" ,assign-homes ,interp-x86-0)
-     ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-     ))
+     ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
 
 ; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
