@@ -30,6 +30,8 @@ jobs:
           exit 1
         fi
 
+    - name: Compile runtime.c
+      run: gcc -c -g -std=c99 runtime.c
     - name: Run check
       run: |
         racket run-tests.rkt | tee /dev/tty | grep -q '0 failure(s) 0 error(s)'
