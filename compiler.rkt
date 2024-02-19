@@ -165,7 +165,7 @@
    (match p
      [(X86Program info (list (cons 'start (Block bl-info body)))) (X86Program info (list (cons 'start (Block bl-info (patch_instr body)))))]))
 
-;; check system and spit out the correct label
+;; check system and spit out the correct label, discontinued.
 (define (correct-label str)
   (string->uninterned-symbol (if (eq? (system-type 'os) 'macosx)
                                  (string-append "_" str)
