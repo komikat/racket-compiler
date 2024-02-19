@@ -142,10 +142,24 @@
      (X86Program info (list (cons 'start (Block bl-info (replace-var body (assign-stack (cdr (assoc 'locals-types info))))))))]
     [else p]))
 
+(define (patch_instr body)
+  (foldr (lambda (inst lst)
+            (match inst
+              [(Instr instr (list (Deref 'rbp n1) (Deref 'rbp n2))) 
+                (append (list (Instr 'movq (list (Deref 'rbp n1) (Reg 'rax))) (Instr instr (list (Reg 'rax) (Deref 'rbp n2)))) lst)]
+              [(Instr instr (list (Imm n))) #:when (> n 2e16)
+                (append (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr instr (list (Reg 'rax)))) lst)]
+              [(Instr instr (list (Imm n) atm)) #:when (> n 2e16)
+                (append (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr instr (list (Reg 'rax) atm))) lst)]
+              [(Instr instr (list atm (Imm n))) #:when (> n 2e16)
+                (append (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr instr (list atm (Reg 'rax)))) lst)]
+              [else (cons inst lst)]
+              )) '() body))
 
 ;; patch-instructions : x86var -> x86int
 (define (patch-instructions p)
-  (error "TODO: code goes here (patch-instructions)"))
+  (match p
+    [(X86Program info (list (cons 'start (Block bl-info body)))) (X86Program info (list (cons 'start (Block bl-info (patch_instr body)))))]))
 
 ;; prelude-and-conclusion : x86int -> x86int
 (define (prelude-and-conclusion p)
@@ -162,7 +176,7 @@
      ("explicate control", explicate-control, interp-Cvar, type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
      ("assign homes" ,assign-homes ,interp-x86-0)
-     ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
 
