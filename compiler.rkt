@@ -168,7 +168,7 @@
 ;; check system and spit out the correct label
 (define (correct-label str)
   (string->uninterned-symbol (if (eq? (system-type 'os) 'macosx)
-                                 (string-append "" str)
+                                 (string-append "_" str)
                                  str)))
 ;; add prelude to the body
 (define (preludify stack-space body)

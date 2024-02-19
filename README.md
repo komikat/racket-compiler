@@ -1,4 +1,10 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-24ddc0f5d75046c5622901739e7c5dd533143b0c8e959d652212380cedb1ea36.svg)](https://classroom.github.com/a/ycm7-Tkm)
+[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-24ddc0f5d75046c5622901739e7c5dd533143b0c8e959d652212380cedb1ea36.svg)](https://classroom.github.com/a/y
+cm7-Tkm)
+
+## Notes
+- Using "_main" and "_conclusion" doesn't work for MacOSX therefore the function using it: `correct-label` was removed from the prelude and conclusion functions.
+- The code was tested on a Mac OSX M1 machine.
+
 ## Homework instructions
 
 For your homework exercises, you will be expected to implement various
