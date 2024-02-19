@@ -107,11 +107,41 @@
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
   (match p
-  [(CProgram info body) (X86Program info `((start . ,(Block info (select_tail (cdr (car body)))))))]))
+    [(CProgram info body) (X86Program info `((start . ,(Block info (select_tail (cdr (car body)))))))]))
+
+
+
+;; assign variables in list from info to a hash map with stack locations
+(define (assign-stack list-vars)
+  (let ([var-hashmap (make-hash)])
+    (map (lambda (var id)
+           (hash-set! var-hashmap (car var) (Deref 'rbp (- (* 8 (+ 1 id)))))
+           ) list-vars (range (length list-vars)))
+    var-hashmap
+    )
+)
+
+
+
+;; take variables inside body and then replace them with their
+;; corresponding entries in the hashmap
+
+(define (replace-var body var-hashmap)
+  (map (lambda (inst)
+         (match inst
+           [(Instr instr (list (Var x))) (Instr instr (list (hash-ref var-hashmap x)))]
+           [(Instr instr (list (Var x) (Var y))) (Instr instr (list (hash-ref var-hashmap x) (hash-ref var-hashmap y)))]
+           [(Instr instr (list (Var x) atm)) (Instr instr (list (hash-ref var-hashmap x) atm))]
+           [(Instr instr (list atm (Var x))) (Instr instr (list atm (hash-ref var-hashmap x)))]
+           [else inst])) body))
 
 ;; assign-homes : x86var -> x86var
 (define (assign-homes p)
-  (error "TODO: code goes here (assign-homes)"))
+  (match p
+    [(X86Program info (list (cons 'start (Block bl-info body)))) #:when (list? (assoc 'locals-types info))
+     (X86Program info (list (cons 'start (Block bl-info (replace-var body (assign-stack (cdr (assoc 'locals-types info))))))))]
+    [else p]))
+
 
 ;; patch-instructions : x86var -> x86int
 (define (patch-instructions p)
@@ -131,7 +161,7 @@
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control", explicate-control, interp-Cvar, type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
-     ;; ("assign homes" ,assign-homes ,interp-x86-0)
+     ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
@@ -139,7 +169,7 @@
 ; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
 ; (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))
-; (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y)))))))
+;(assign-homes (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))))
 ; (uniquify (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Int 43) (Var 'x))))))
 ; (interp-Lvar (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Let 'x (Int 50) (Prim '+ (list (Var 'x) (Int 10)))) (Var 'x)))))))
