@@ -7,6 +7,7 @@
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
+(require "interp.rkt")
 (provide (all-defined-out))
 
 
@@ -74,34 +75,39 @@
 ; tail ::= (Return exp) | (Seq stmt tail)
 ; CVar ::=  (CProgram info ((label . tail) ... ))
 
-; (define (select_exp e)
-;   (match e
-;     [(Int n) (Imm n)]
-;     [(Var x) (Var x)]
-;     [(Prim 'read ()) ]))
+; reg ::= rsp|rbp|rax|rbx|rcx|rdx|rsi|rdi| r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
+; arg ::= (Imm int) | (Reg reg) | (Deref reg int)
+; instr ::= (Instr addq (arg arg)) | (Instr subq (arg arg))
+;           | (Instr negq (arg)) | (Instr movq (arg arg))
+;           | (Instr pushq (arg)) | (Instr popq (arg))
+;           | (Callq label int) | (Retq) | (Jmp label)
+; block ::= (Block info (instr...))
+; x86int ::= (X86Program info ((label . block) ... ))
 
 (define (select_atm a)
   (match a
     [(Int n) (Imm n)]
-    [(Var x) (Var x)]))
+    [(Var x) (Var x)]
+    [(Reg reg) (Reg reg)]))
 
 (define (select_stmt e)
   (match e
-    [(Assign (Var x) (Int n)) ('movq (Imm n) (Var x))]
-    [(Assign (Var x) (Var y)) ('movq (Var y) (Var x))]
-    ; [(Assign (Var x) (Prim 'read ())) (Seq (callq read_int) (movq %rax (Var x)))]
-    [(Assign (Var x) (Prim '- (list atm))) ('negq atm)]
-    [(Assign (Var x) (Prim '+ (list atm1 atm2))) (list ('movq (select_atm atm1) (Var x)) ('addq (select_atm atm2) (Var x)))]
-    [(Assign (Var x) (Prim '- (list atm1 atm2))) (list ('movq (select_atm atm1) (Var x)) ('subq (select_atm atm2) (Var x)))]
-    [(Seq stmt tail) (Seq (select_stmt e) (select_stmt tail))]
-    [(Return ex) (select_stmt (Assign ((Var '%rax) ex)))]))
+    [(Assign x (Int n)) (list (Instr 'movq (list (Imm n) x)))]
+    [(Assign x (Var y)) (list (Instr 'movq (list (Var y) x)))]
+    [(Assign x (Prim 'read '())) (list (Instr 'callq 'read_int) (Instr 'movq (list (Reg 'rax) x)))]
+    [(Assign x (Prim '- (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'negq (list x)))]
+    [(Assign x (Prim '+ (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'addq (list (select_atm atm2) x)))]
+    [(Assign x (Prim '- (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'subq (list (select_atm atm2) x)))]))
+
+(define (select_tail e)
+  (match e
+    [(Seq stmt tail) (append (select_stmt stmt) (select_tail tail))]
+    [(Return ex) (append (select_stmt (Assign (Reg 'rax) ex)) (list (Jmp 'conclusion)))]))
 
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
   (match p
-  [(CProgram info body) 
-    (match body
-      [(label e) (x86Program info (select_stmt e))])]))
+  [(CProgram info body) (X86Program info `((start . ,(Block info (select_tail (cdr (car body)))))))]))
 
 ;; assign-homes : x86var -> x86var
 (define (assign-homes p)
@@ -124,14 +130,16 @@
      ("uniquify", uniquify, interp-Lvar, type-check-Lvar)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control", explicate-control, interp-Cvar, type-check-Cvar)
-     ;; ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
 
-(explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
-(explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))
+; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
+; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
+; (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))
+; (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y)))))))
 ; (uniquify (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Int 43) (Var 'x))))))
 ; (interp-Lvar (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Let 'x (Int 50) (Prim '+ (list (Var 'x) (Int 10)))) (Var 'x)))))))
