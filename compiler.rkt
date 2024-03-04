@@ -256,6 +256,8 @@
       (Instr 'popq (list (Reg 'rbp)))
       (Retq)))))))
 
+
+
 ; register allocation
 
 ;; Interference Graph
@@ -265,50 +267,57 @@
 ;; for other instructions - for every d in W(k) and v in Lafter(k), if v!=d, add edge(v,d)
 ;; work from top to bottom
 
-(define (interference-graph live-after body)
+(define (interference-graph live-after body g)
   (foldr (lambda (live instr edges)
-          (append (match instr
+          (match instr
             [(Instr 'movq (list s d)) (foldr (lambda (v lst)
                                         (cond
-                                          [(or (equal? s v) (equal? d v)) (cons (list v d) lst)]
-                                          [else lst])) 
+                                          [(and (not (has-edge? g s v)) (not (has-edge? g d v))) (add-edge! g d v)]))
                                       '() live)]
-            [(cons Callq _) (foldr (lambda (v lst)
-                                        (append '((v (Reg 'rax)) (v (Reg 'rcx)) (v (Reg 'rdx)) (v (Reg 'rsi)) 
-                                                  (v (Reg 'rdi)) (v (Reg 'r8)) (v (Reg 'r9)) (v (Reg 'r10)) (v (Reg 'r11))) 
-                                          lst)) 
+            [(Callq _ _) (foldr (lambda (v lst)
+                                        ((add-edge! g v (Reg 'rax))
+                                        (add-edge! g v (Reg 'rcx))
+                                        (add-edge! g v (Reg 'rdx))
+                                        (add-edge! g v (Reg 'rsi))
+                                        (add-edge! g v (Reg 'rdi))
+                                        (add-edge! g v (Reg 'r8))
+                                        (add-edge! g v (Reg 'r9))
+                                        (add-edge! g v (Reg 'r10))
+                                        (add-edge! g v (Reg 'r11)))) 
                                       '() live)]
-            [(Instr 'pushq _) '()]
+            ; [(Instr 'pushq _) '()]
             [(Instr _ (list s d)) (foldr (lambda (v lst)
                                     (cond
-                                      [(equal? d v) (cons (list v d) lst)]
-                                      [else lst]))
+                                      [(not (equal? d v)) (add-edge! g v d)]))
                                   '() live)]
             [(Instr _ (list d)) (foldr (lambda (v lst)
                                     (cond
-                                      [(equal? d v) (cons (list v d) lst)]
-                                      [else lst])) 
-                                '() live)]
-            [else '()]) edges))
-        '() live-after body))
-
-; (define (build-blocks body)
-;   (map (lambda (block)
-;     (match block
-;       [(x Block info e) (x Block (list 'interference (interference-graph (cdr (assoc 'live-after info)) e)) e)]))
-;     body))
+                                      [(not (equal? d v)) (add-edge! g v d)])) 
+                                '() live)]))
+        '() live-after body) g)
 
 (define (build-blocks body)
   (map (lambda (block)
          (match block
-           [(cons x (Block info e)) (cons x (Block (list 'interference (interference-graph (cdr (assoc 'live-after info)) e)) e))]))
+           [(cons x (Block info e)) (cons x (Block (list 'conflicts (interference-graph (cdr (assoc 'live-after info)) e (undirected-graph '()))) e))]))
         body))
 
 (define (build-interference p)
   (match p
     [(X86Program info body) (X86Program info (build-blocks body))]))
 
-(build-interference out)
+; (build-interference out2)
+
+(define live-after (list (list (Var 'u) (Var 'v))))
+(define body (list (Instr 'movq (list (Reg 'rax) (Var 'd)))))
+
+(interference-graph live-after body (undirected-graph '()))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Callq 'read-int 0)) (undirected-graph '()))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'addq (list (Imm 32) (Reg 'rax)))) (undirected-graph '()))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'negq (list (Var 'x)))) (undirected-graph '()))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'pushq (list (Reg 'rbp)))) (undirected-graph '()))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Retq)) (undirected-graph '()))
+
 
 ; (define (g) (undirected-graph '()))
 
