@@ -1,7 +1,5 @@
 #lang racket
-(require racket/set racket/stream)
-(require racket/fixnum)
-(require "interp-Lint.rkt")
+(require racket/match)
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
@@ -9,7 +7,6 @@
 (require "utilities.rkt")
 (require "interp.rkt")
 (provide (all-defined-out))
-
 
 (define (uniquify-exp env)
   (lambda (e)
@@ -165,7 +162,8 @@
    (match p
      [(X86Program info (list (cons 'start (Block bl-info body)))) (X86Program info (list (cons 'start (Block bl-info (patch_instr body)))))]))
 
-;; check system and spit out the correct label, discontinued.
+;; check system and spit out the correct label
+;; Discontinued.
 (define (correct-label str)
   (string->uninterned-symbol (if (eq? (system-type 'os) 'macosx)
                                  (string-append "_" str)
@@ -190,19 +188,103 @@
                               (X86Program info
                                           (concludify stack-space
                                                      (preludify stack-space body))))]))
+;; (X86Program
+;;  '((stack-space . 16) (stack-space . 16) (locals-types))
+;;  (list
+;;   (cons
+;;    'start
+;;    (Block
+;;     '((locals-types))
+;;     (list (Instr 'movq (list (Imm 42) (Reg 'rax))) (Jmp 'conclusion))))))
+
+;; (X86Program
+;;  '((stack-space . 16) (locals-types (g14345 . Integer)))
+;;  (list
+;;   (cons
+;;    'start
+;;    (Block
+;;     '((locals-types (g14345 . Integer)))
+;;     (list
+;;      (Instr 'movq (list (Imm 41) (Var 'g14345)))
+;;      (Instr 'movq (list (Var 'g14345) (Reg 'rax)))
+;;      (Instr 'addq (list (Imm 1) (Reg 'rax)))
+;;      (Jmp 'conclusion))))))
+
+(require racket/set)
+
+
+;; reg ::= rsp | rbp | rax | rbx | rcx | rdx | rsi | rdi |
+;;         r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
+;; arg ::= (Imm int) | (Reg reg) | (Deref reg int)
+;; instr ::= (Instr addq (arg arg)) | (Instr subq (arg arg)) |
+;;           (Instr negq (arg)) | (Instr movq (arg arg)) |
+;;           (Instr pushq (arg)) | (Instr popq (arg)) |
+;;           (Callq label int) | (Retq) | (Jmp label)
+;; block ::= (Block info (instr … ))
+;; x86Int ::= (X86Program info ((label . block) … ))
+
+;; compute the set of locations read by an instruction
+;; arg? -> (set)
+(define (get-loc arg)
+  (match arg
+    [(Reg r) (set r)]
+    [(Var x) (set x)]
+    [(Imm m) (set)]
+    ))
+
+;; locations written by an instruction
+;; Instr? -> (set)
+(define (write-locs instr)
+  (match instr
+    [(Instr q (list _ a)) #:when (member q (list 'addq 'subq)) (get-loc a)]
+    [(Instr q (list a)) #:when (member q (list 'negq)) (get-loc a)] ;; ASSUMPTION: pushq popq are not reading the locations
+    [(Instr 'movq (list a1 a2)) (get-loc a2)]
+    [(Retq) (set)]
+    ([Callq _ _] (set)) ;; TODO
+    ([Jmp _] (set)) ;; TODO
+    ))
+
+;; locations read by an instruction
+;; Instr? -> (set)
+(define (read-locs instr)
+  (match instr
+    [(Instr q (list a1 a2)) #:when (member q (list 'addq 'subq)) (set-union (get-loc a1) (get-loc a2))]
+    [(Instr q (list a)) #:when (member q (list 'negq)) (get-loc a)] ;; ASSUMPTION: pushq popq are not reading the locations
+    [(Instr 'movq (list a1 a2)) (get-loc a1)]
+    [(Retq) (set)]
+    ([Callq _ _] (set)) ;; TODO
+    ([Jmp _] (set)) ;; TODO
+    ))
+
+(define (live-after-k-1 instr live-after-k)
+  (set-union (set-subtract live-after-k (write-locs instr)) (read-locs instr)))
+
+
+;; [Instr], initial-live-after -> [(live-after Instr)]
+(define (instr-to-live-after instrs initial)
+  (map (lambda (i-k i-k-1)
+         (if (eq? (last instrs) i-k) initial (live-after-k-1 i-k ))) instrs (cons (cdr instrs) '(())))
+  )
+
+;; w
+
+
+(define (uncover-live p)
+  (match p
+    [(X86Program info blocks) (X86Program )]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes
   `(
-     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-     ("explicate control" ,explicate-control, interp-Cvar ,type-check-Cvar)
-     ("instruction selection" ,select-instructions ,interp-x86-0)
-     ("assign homes" ,assign-homes ,interp-x86-0)
-     ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
+    ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+    ("explicate control" ,explicate-control, interp-Cvar ,type-check-Cvar)
+    ("instruction selection" ,select-instructions ,interp-x86-0)
+    ("assign homes" ,assign-homes ,interp-x86-0)
+    ("patch instructions" ,patch-instructions ,interp-x86-0)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
 
 ; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
