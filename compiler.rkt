@@ -354,7 +354,7 @@
 (define (lowest-color colors adjacent)
   (apply min (remove-values
               (map (lambda (register) (hash-ref colors register))
-                   adjacent)
+                   (filter (lambda (x) (hash-has-key? colors x)) adjacent))
               (build-list 100 values))))
 
 (define (color-graph graph vars [colors init-colors])
