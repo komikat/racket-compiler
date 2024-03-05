@@ -1,5 +1,7 @@
 #lang racket
 (require racket/match)
+(require racket/list)
+(require racket/set)
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
@@ -138,7 +140,7 @@
   (match p
     [(X86Program info (list (cons 'start (Block bl-info body))))
      #:when (list? (assoc 'locals-types info))
-     (X86Program (assign-stack-space info) (list (cons 'start (Block bl-info (replace-var body (assign-stack (cdr (assoc 'locals-types info))))))))]
+     (X86Program info (list (cons 'start (Block bl-info (replace-var body (assign-stack (cdr (assoc 'locals-types info))))))))]
     [else p]))
 
 (define (patch_instr body)
@@ -210,7 +212,7 @@
 ;;      (Instr 'addq (list (Imm 1) (Reg 'rax)))
 ;;      (Jmp 'conclusion))))))
 
-(require racket/set)
+
 
 
 ;; reg ::= rsp | rbp | rax | rbx | rcx | rdx | rsi | rdi |
@@ -232,46 +234,54 @@
     [(Imm m) (set)]
     ))
 
+(define caller-saved-regs (set 'rax 'rcx 'rdx 'rsi 'rdi 'r8 'r9 'r10 'r11))
+(define arg-passing-regs '(rdi rsi rdx rcx r8 r9))
+
 ;; locations written by an instruction
-;; Instr? -> (set)
+;; Instr? -> set?
 (define (write-locs instr)
   (match instr
     [(Instr q (list _ a)) #:when (member q (list 'addq 'subq)) (get-loc a)]
     [(Instr q (list a)) #:when (member q (list 'negq)) (get-loc a)] ;; ASSUMPTION: pushq popq are not reading the locations
-    [(Instr 'movq (list a1 a2)) (get-loc a2)]
+    [(Instr 'movq (list _ a2)) (get-loc a2)]
     [(Retq) (set)]
-    ([Callq _ _] (set)) ;; TODO
+    ([Callq _ _] caller-saved-regs) 
     ([Jmp _] (set)) ;; TODO
     ))
 
 ;; locations read by an instruction
-;; Instr? -> (set)
+;; Instr? -> set?
 (define (read-locs instr)
   (match instr
     [(Instr q (list a1 a2)) #:when (member q (list 'addq 'subq)) (set-union (get-loc a1) (get-loc a2))]
     [(Instr q (list a)) #:when (member q (list 'negq)) (get-loc a)] ;; ASSUMPTION: pushq popq are not reading the locations
     [(Instr 'movq (list a1 a2)) (get-loc a1)]
     [(Retq) (set)]
-    ([Callq _ _] (set)) ;; TODO
+    ([Callq _ arity] (list->set (drop-right arg-passing-regs (- (length arg-passing-regs) arity)))) 
     ([Jmp _] (set)) ;; TODO
     ))
 
+;; (Instr?, set?) -> set?
 (define (live-after-k-1 instr live-after-k)
   (set-union (set-subtract live-after-k (write-locs instr)) (read-locs instr)))
 
+;; Int? -> list?
+(define (sub-instr l)
+  (build-list (length l) (lambda (x) (drop l x))))
 
-;; [Instr], initial-live-after -> [(live-after Instr)]
+;; ([Instr?], set?) -> [set?]
 (define (instr-to-live-after instrs initial)
-  (map (lambda (i-k i-k-1)
-         (if (eq? (last instrs) i-k) initial (live-after-k-1 i-k ))) instrs (cons (cdr instrs) '(())))
+  (map (lambda (l-instr)
+         (foldr live-after-k-1 initial l-instr)) (sub-instr instrs))
   )
 
-;; w
-
+(define (update-blocks Block-pair)
+  (match Block-pair
+    [(cons label (Block info instrs)) (cons label (Block (dict-set info 'l-after (instr-to-live-after instrs (set 'rsp))) instrs))]))
 
 (define (uncover-live p)
   (match p
-    [(X86Program info blocks) (X86Program )]))
+    [(X86Program info Block-alist) (X86Program info (map update-blocks Block-alist))]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
@@ -282,9 +292,11 @@
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
     ("explicate control" ,explicate-control, interp-Cvar ,type-check-Cvar)
     ("instruction selection" ,select-instructions ,interp-x86-0)
-    ("assign homes" ,assign-homes ,interp-x86-0)
+    ;("assign homes" ,assign-homes ,interp-x86-0)
+    ("uncover live" ,uncover-live ,interp-x86-0)
     ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+    ))
 
 ; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
