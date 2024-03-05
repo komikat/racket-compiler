@@ -258,7 +258,7 @@
     [(Instr 'movq (list a1 a2)) (get-loc a1)]
     [(Retq) (set)]
     ([Callq _ arity] (list->set (drop-right arg-passing-regs (- (length arg-passing-regs) arity)))) 
-    ([Jmp _] (set)) ;; TODO
+    ([Jmp 'conclusion] (set 'rax 'rsp))
     ))
 
 ;; (Instr?, set?) -> set?
@@ -277,7 +277,12 @@
 
 (define (update-blocks Block-pair)
   (match Block-pair
-    [(cons label (Block info instrs)) (cons label (Block (dict-set info 'l-after (instr-to-live-after instrs (set 'rsp))) instrs))]))
+    [(cons label (Block info instrs)) (cons label (Block (dict-set info 'l-after (instr-to-live-after instrs (set))) instrs))]))
+
+;; TODO
+(define (label-live Block-pair)
+  (match Block-pair
+    [(cons label (Block info instrs)) (cons label (instr-to-live-after instrs (set)))]))
 
 (define (uncover-live p)
   (match p
