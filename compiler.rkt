@@ -120,34 +120,7 @@
   (match p
     [(CProgram info body) (X86Program (assign-stack-space info) `((start . ,(Block info (select_tail (cdr (car body)))))))]))
 
-;; assign variables in list from info to a hash map with stack locations
-(define (assign-stack list-vars)
-  (let ([var-hashmap (make-hash)])
-    (map (lambda (var id)
-           (hash-set! var-hashmap (car var) (Deref 'rbp (- (* 8 (+ 1 id)))))
-           ) list-vars (range (length list-vars)))
-    var-hashmap
-    )
-)
 
-;; take variables inside body and then replace them with their
-;; corresponding entries in the hashmap
-(define (replace-var body var-hashmap)
-  (map (lambda (inst)
-         (match inst
-           [(Instr instr (list (Var x))) (Instr instr (list (hash-ref var-hashmap x)))]
-           [(Instr instr (list (Var x) (Var y))) (Instr instr (list (hash-ref var-hashmap x) (hash-ref var-hashmap y)))]
-           [(Instr instr (list (Var x) atm)) (Instr instr (list (hash-ref var-hashmap x) atm))]
-           [(Instr instr (list atm (Var x))) (Instr instr (list atm (hash-ref var-hashmap x)))]
-           [else inst])) body))
-
-;; assign-homes : x86var -> x86var
-(define (assign-homes p)
-  (match p
-    [(X86Program info (list (cons 'start (Block bl-info body))))
-     #:when (list? (assoc 'locals-types info))
-     (X86Program info (list (cons 'start (Block bl-info (replace-var body (assign-stack (cdr (assoc 'locals-types info))))))))]
-    [else p]))
 
 (define (patch_instr body)
   (foldr (lambda (inst lst)
@@ -283,7 +256,7 @@
 
 (define (update-blocks Block-pair)
   (match Block-pair
-    [(cons label (Block info instrs)) (cons label (Block (dict-set info 'l-after (instr-to-live-after instrs (set))) instrs))]))
+    [(cons label (Block info instrs)) (cons label (Block (dict-set info 'live-after (instr-to-live-after instrs (set))) instrs))]))
 
 ;; TODO
 (define (label-live Block-pair)
@@ -293,6 +266,147 @@
 (define (uncover-live p)
   (match p
     [(X86Program info Block-alist) (X86Program info (map update-blocks Block-alist))]))
+
+(define (get-final arg)
+  (match arg
+    [(Reg r) r]
+    [(Var x) x]
+    [(Imm m) '()] ;; TODO
+    ))
+; register allocation
+
+;; Interference Graph
+;; for each instruction - edge between write location(s) and live locations, no interference with itself
+;; callq - edge between every live variable and every caller-saved register
+;; for movq s,d - if for every v in Lafter(k) if v!=d and v!=s, add edge(v,d)
+;; for other instructions - for every d in W(k) and v in Lafter(k), if v!=d, add edge(v,d)
+;; work from top to bottom
+
+(define (find-edges live-after body)
+  (foldr (lambda (live instr edges)
+           (append (match instr
+                     [(Instr 'movq (list s d)) (foldr (lambda (v lst)
+                                                        (cond
+                                                          [(and (not (equal? (get-final s) v)) (not (equal? (get-final d) v))) (cons (list v (get-final d)) lst)]
+                                                          [else lst])) 
+                                                      '() (set->list live))]
+                     [(Callq _ _) (foldr (lambda (v lst)
+                                           (append (list (list v 'rax) (list v 'rcx) (list v 'rdx) (list v 'rsi) 
+                                                         (list v 'rdi) (list v 'r8) (list v 'r9) (list v 'r10) (list v 'r11)) 
+                                                   lst)) 
+                                         '() (set->list live))]
+                     [(Instr 'pushq _) '()]
+                     [(Instr _ (list s d)) (foldr (lambda (v lst)
+                                                    (cond
+                                                      [(not (equal? (get-final d) v)) (cons (list v (get-final d)) lst)]
+                                                      [else lst]))
+                                                  '() (set->list live))]
+                     [(Instr _ (list d)) (foldr (lambda (v lst)
+                                                  (cond
+                                                    [(not (equal? (get-final d) v)) (cons (list v (get-final d)) lst)]
+                                                    [else lst])) 
+                                                '() (set->list live))]
+                     [else '()]) edges))
+         '() live-after body))
+
+(define (interference-graph live-after body)
+  (undirected-graph (set->list (list->set (find-edges live-after body)))))
+
+(define (build-blocks body)
+  (map (lambda (block)
+         (match block
+           [(cons x (Block info e)) (cons x (Block (dict-set info 'conflicts (interference-graph (cdr (assoc 'live-after info)) e)) e))]))
+        body))
+
+(define (build-interference p)
+  (match p
+    [(X86Program info body) (X86Program info (build-blocks body))]))
+
+(define init-colors (hash 'rcx 0 'rdx 1 'rsi 2 'rdi 3 'r8 4 'r9 5 'r10 6 'rbx 7 'r12 8 'r13 9 'r14 10 'rax -1 'rsp -2 'rbp -3 'r11 -4 'r15 -5))
+(define color-regs (hash 0 'rcx 1 'rdx 2 'rsi 3 'rdi 4 'r8 5 'r9 6 'r10 7 'rbx 8 'r12 9 'r13 10 'r14))
+
+
+;; greedy
+;; graph?, hash? -> [set?]
+(define (compute-saturation-hash-count graph colors vars)
+  (define saturation-hash (make-hash))
+  (for-each (lambda (vertex)
+              (let ((saturation-set (list->set (map (lambda (neighbor) (hash-ref colors neighbor))
+                                                    (filter (lambda (neighbor) (hash-has-key? colors neighbor))
+                                                            (get-neighbors graph vertex))))))
+                (hash-set! saturation-hash vertex (set-count saturation-set))))
+            vars)
+  saturation-hash)
+
+(define (key-with-highest-value hash-table)
+  (car (let ((key-value-pairs (hash-map hash-table (lambda (key value) (cons key value)))))
+         (foldl (lambda (pair current-best)
+                  (if (or (not current-best) (> (cdr pair) (cdr current-best)))
+                      pair
+                      current-best))
+                #f
+                key-value-pairs))))
+
+(define (remove-values small big)
+  (filter (lambda (x) (not (member x small))) big))
+
+;; lowest color not in adjacent
+(define (lowest-color colors adjacent)
+  (apply min (remove-values
+              (map (lambda (register) (hash-ref colors register))
+                   adjacent)
+              (build-list 100 values))))
+
+(define (color-graph graph vars [colors init-colors])
+  (if (eq? (length vars) 0) colors
+      (let [(highest-satur-var (key-with-highest-value (compute-saturation-hash-count graph colors vars)))]
+        (color-graph graph (remove highest-satur-var vars)
+                     (hash-set colors highest-satur-var (lowest-color colors (get-neighbors graph highest-satur-var))))))
+  )
+
+;; take every variable
+;; get color from color-graph
+;; get color register (if in bounds)
+;; else pass to assign stack
+
+(define (assign-register list-vars color-graph)
+  (define var-to-register-hash (make-hash))
+  (for-each (lambda (var)
+              (let ((color (hash-ref color-graph var)))
+                (let ((register (hash-ref color-regs color)))
+                  (hash-set! var-to-register-hash var (Reg register)))))
+            list-vars)
+  var-to-register-hash)
+
+;; assign variables in list from info to a hash map with stack locations
+(define (assign-stack list-vars var-register-hashmap)
+  (let ([var-hashmap var-register-hashmap])
+    (map (lambda (var id)
+           (hash-set! var-hashmap (car var) (Deref 'rbp (- (* 8 (+ 1 id)))))
+           ) list-vars (range (length list-vars)))
+    var-hashmap))
+
+;; take variables inside body and then replace them with their
+;; corresponding entries in the hashmap
+(define (replace-var body var-hashmap)
+  (map (lambda (inst)
+         (match inst
+           [(Instr instr (list (Var x))) (Instr instr (list (hash-ref var-hashmap x)))]
+           [(Instr instr (list (Var x) (Var y))) (Instr instr (list (hash-ref var-hashmap x) (hash-ref var-hashmap y)))]
+           [(Instr instr (list (Var x) atm)) (Instr instr (list (hash-ref var-hashmap x) atm))]
+           [(Instr instr (list atm (Var x))) (Instr instr (list atm (hash-ref var-hashmap x)))]
+           [else inst])) body))
+
+;; assign-homes : x86var -> x86var
+(define (allocate-registers p)
+  (match p
+    [(X86Program info (list (cons 'start (Block bl-info body))))
+     #:when (list? (assoc 'locals-types info))
+     (let ([list-vars (map car (cdr (assoc 'locals-types bl-info)))])
+       (X86Program info (list (cons 'start (Block bl-info (replace-var body (assign-register list-vars
+                                                                                             (color-graph (cdr (assoc 'conflicts bl-info))
+                                                                                                           list-vars))))))))]
+    [else p]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
@@ -305,131 +419,7 @@
     ("instruction selection" ,select-instructions ,interp-x86-0)
     ;("assign homes" ,assign-homes ,interp-x86-0)
     ("uncover live" ,uncover-live ,interp-x86-0)
+    ("build interference" ,build-interference ,interp-x86-0)
+    ("allocate registers" ,allocate-registers ,interp-x86-0)
     ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-    ))
-
-
-; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
-; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
-; (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))
-; (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y)))))))
-; (assign-homes (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))))
-; (uniquify (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
-; (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Int 43) (Var 'x))))))
-; (interp-Lvar (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Let 'x (Int 50) (Prim '+ (list (Var 'x) (Int 10)))) (Var 'x)))))))
-
-
-;; output for prelude and conclusion 
-
-(define out
-  (X86Program
-  '((stack-space . 32)
-    (stack-space . 32)
-    (locals-types (g14349 . Integer) (g14350 . Integer)))
-  (list
-    (cons
-    'start
-    (Block
-      '((locals-types (g14349 . Integer) (g14350 . Integer))
-        (live-after (list (Reg 'rax)) (list (Deref 'rbp -16)) (list (Reg 'rax)) '() (list (Deref 'rbp -8)) (list (Deref 'rbp -8)) (list (Reg 'rax)) '()))
-      (list
-      (Callq 'read_int 0)
-      (Instr 'movq (list (Reg 'rax) (Deref 'rbp -16)))
-      (Instr 'movq (list (Deref 'rbp -16) (Reg 'rax)))
-      (Instr 'movq (list (Reg 'rax) (Deref 'rbp -8)))
-      (Instr 'addq (list (Imm 1) (Deref 'rbp -8)))
-      (Instr 'movq (list (Imm 1) (Reg 'rax)))
-      (Instr 'addq (list (Deref 'rbp -8) (Reg 'rax)))
-      (Jmp 'conclusion))))
-    (cons
-    'main
-    (Block
-      '((live-after (list (Reg 'rsp)) (list (Reg 'rbp)) (list (Reg 'rsp) (Reg 'rbp)) '()))
-      (list
-      (Instr 'pushq (list (Reg 'rbp)))
-      (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
-      (Instr 'subq (list (Imm 32) (Reg 'rsp)))
-      (Jmp 'start))))
-    (cons
-    'conclusion
-    (Block
-      '((live-after '() '() '()))
-      (list
-      (Instr 'addq (list (Imm 32) (Reg 'rsp)))
-      (Instr 'popq (list (Reg 'rbp)))
-      (Retq)))))))
-
-
-
-; register allocation
-
-;; Interference Graph
-;; for each instruction - edge between write location(s) and live locations, no interference with itself
-;; callq - edge between every live variable and every caller-saved register
-;; for movq s,d - if for every v in Lafter(k) if v!=d and v!=s, add edge(v,d)
-;; for other instructions - for every d in W(k) and v in Lafter(k), if v!=d, add edge(v,d)
-;; work from top to bottom
-
-(define (find-edges live-after body)
-  (foldr (lambda (live instr edges)
-          (append (match instr
-            [(Instr 'movq (list s d)) (foldr (lambda (v lst)
-                                        (cond
-                                          [(and (not (equal? s v)) (not (equal? d v))) (cons (list v d) lst)]
-                                          [else lst])) 
-                                      '() live)]
-            [(Callq _ _) (foldr (lambda (v lst)
-                                        (append (list (list v (Reg 'rax)) (list v (Reg 'rcx)) (list v (Reg 'rdx)) (list v (Reg 'rsi)) 
-                                                  (list v (Reg 'rdi)) (list v (Reg 'r8)) (list v (Reg 'r9)) (list v (Reg 'r10)) (list v (Reg 'r11))) 
-                                          lst)) 
-                                      '() live)]
-            [(Instr 'pushq _) '()]
-            [(Instr _ (list s d)) (foldr (lambda (v lst)
-                                    (cond
-                                      [(not (equal? d v)) (cons (list v d) lst)]
-                                      [else lst]))
-                                  '() live)]
-            [(Instr _ (list d)) (foldr (lambda (v lst)
-                                    (cond
-                                      [(not (equal? d v)) (cons (list v d) lst)]
-                                      [else lst])) 
-                                '() live)]
-            [else '()]) edges))
-        '() live-after body))
-
-(define (interference-graph live-after body)
-  (undirected-graph (set->list (list->set (find-edges live-after body)))))
-
-; (define (build-blocks body)
-;   (map (lambda (block)
-;     (match block
-;       [(x Block info e) (x Block (list 'interference (interference-graph (cdr (assoc 'live-after info)) e)) e)]))
-;     body))
-
-(define (build-blocks body)
-  (map (lambda (block)
-         (match block
-           [(cons x (Block info e)) (cons x (Block (list 'conflicts (interference-graph (cdr (assoc 'live-after info)) e)) e))]))
-        body))
-
-(define (build-interference p)
-  (match p
-    [(X86Program info body) (X86Program info (build-blocks body))]))
-
-; (build-interference out2)
-
-(define live-after (list (list (Var 'u) (Var 'v))))
-(define body (list (Instr 'movq (list (Reg 'rax) (Var 'd)))))
-
-(stream->list (in-edges (interference-graph live-after body)))
-(interference-graph (list (list (Var 'u) (Var 'v))) (list (Callq 'read-int 0)))
-(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'addq (list (Imm 32) (Reg 'rax)))))
-(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'negq (list (Var 'x)))))
-(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'pushq (list (Reg 'rbp)))))
-(interference-graph (list (list (Var 'u) (Var 'v))) (list (Retq)))
-
-
-; (define (g) (undirected-graph '()))
-
-; (g)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
