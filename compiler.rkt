@@ -1,7 +1,13 @@
 #lang racket
+
 (require racket/match)
 (require racket/list)
 (require racket/set)
+(require racket/set racket/stream)
+(require racket/fixnum)
+(require racket/match)
+(require graph)
+(require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
@@ -303,12 +309,127 @@
     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
     ))
 
+
 ; (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (select-instructions (explicate-control (Program '() (Prim '+ (list  (Int 1) (Int 2))))))
 ; (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))
-;(assign-homes (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))))
+; (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y)))))))
+; (assign-homes (select-instructions (explicate-control (remove-complex-opera* (uniquify (Program '() (Let 'y (Let 'x (Int 20) (Prim '+ (list (Var 'x) (Let 'x (Int 22) (Var 'x))))) (Var 'y))))))))
 ; (uniquify (Program '() (Prim '+ (list  (Int 1) (Int 2)))))
 ; (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Int 43) (Var 'x))))))
 ; (interp-Lvar (uniquify (Program '() (Let 'x (Int 43) (Prim '+ (list (Let 'x (Int 50) (Prim '+ (list (Var 'x) (Int 10)))) (Var 'x)))))))
 
 
+;; output for prelude and conclusion 
+
+(define out
+  (X86Program
+  '((stack-space . 32)
+    (stack-space . 32)
+    (locals-types (g14349 . Integer) (g14350 . Integer)))
+  (list
+    (cons
+    'start
+    (Block
+      '((locals-types (g14349 . Integer) (g14350 . Integer))
+        (live-after (list (Reg 'rax)) (list (Deref 'rbp -16)) (list (Reg 'rax)) '() (list (Deref 'rbp -8)) (list (Deref 'rbp -8)) (list (Reg 'rax)) '()))
+      (list
+      (Callq 'read_int 0)
+      (Instr 'movq (list (Reg 'rax) (Deref 'rbp -16)))
+      (Instr 'movq (list (Deref 'rbp -16) (Reg 'rax)))
+      (Instr 'movq (list (Reg 'rax) (Deref 'rbp -8)))
+      (Instr 'addq (list (Imm 1) (Deref 'rbp -8)))
+      (Instr 'movq (list (Imm 1) (Reg 'rax)))
+      (Instr 'addq (list (Deref 'rbp -8) (Reg 'rax)))
+      (Jmp 'conclusion))))
+    (cons
+    'main
+    (Block
+      '((live-after (list (Reg 'rsp)) (list (Reg 'rbp)) (list (Reg 'rsp) (Reg 'rbp)) '()))
+      (list
+      (Instr 'pushq (list (Reg 'rbp)))
+      (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
+      (Instr 'subq (list (Imm 32) (Reg 'rsp)))
+      (Jmp 'start))))
+    (cons
+    'conclusion
+    (Block
+      '((live-after '() '() '()))
+      (list
+      (Instr 'addq (list (Imm 32) (Reg 'rsp)))
+      (Instr 'popq (list (Reg 'rbp)))
+      (Retq)))))))
+
+
+
+; register allocation
+
+;; Interference Graph
+;; for each instruction - edge between write location(s) and live locations, no interference with itself
+;; callq - edge between every live variable and every caller-saved register
+;; for movq s,d - if for every v in Lafter(k) if v!=d and v!=s, add edge(v,d)
+;; for other instructions - for every d in W(k) and v in Lafter(k), if v!=d, add edge(v,d)
+;; work from top to bottom
+
+(define (find-edges live-after body)
+  (foldr (lambda (live instr edges)
+          (append (match instr
+            [(Instr 'movq (list s d)) (foldr (lambda (v lst)
+                                        (cond
+                                          [(and (not (equal? s v)) (not (equal? d v))) (cons (list v d) lst)]
+                                          [else lst])) 
+                                      '() live)]
+            [(Callq _ _) (foldr (lambda (v lst)
+                                        (append (list (list v (Reg 'rax)) (list v (Reg 'rcx)) (list v (Reg 'rdx)) (list v (Reg 'rsi)) 
+                                                  (list v (Reg 'rdi)) (list v (Reg 'r8)) (list v (Reg 'r9)) (list v (Reg 'r10)) (list v (Reg 'r11))) 
+                                          lst)) 
+                                      '() live)]
+            [(Instr 'pushq _) '()]
+            [(Instr _ (list s d)) (foldr (lambda (v lst)
+                                    (cond
+                                      [(not (equal? d v)) (cons (list v d) lst)]
+                                      [else lst]))
+                                  '() live)]
+            [(Instr _ (list d)) (foldr (lambda (v lst)
+                                    (cond
+                                      [(not (equal? d v)) (cons (list v d) lst)]
+                                      [else lst])) 
+                                '() live)]
+            [else '()]) edges))
+        '() live-after body))
+
+(define (interference-graph live-after body)
+  (undirected-graph (set->list (list->set (find-edges live-after body)))))
+
+; (define (build-blocks body)
+;   (map (lambda (block)
+;     (match block
+;       [(x Block info e) (x Block (list 'interference (interference-graph (cdr (assoc 'live-after info)) e)) e)]))
+;     body))
+
+(define (build-blocks body)
+  (map (lambda (block)
+         (match block
+           [(cons x (Block info e)) (cons x (Block (list 'conflicts (interference-graph (cdr (assoc 'live-after info)) e)) e))]))
+        body))
+
+(define (build-interference p)
+  (match p
+    [(X86Program info body) (X86Program info (build-blocks body))]))
+
+; (build-interference out2)
+
+(define live-after (list (list (Var 'u) (Var 'v))))
+(define body (list (Instr 'movq (list (Reg 'rax) (Var 'd)))))
+
+(stream->list (in-edges (interference-graph live-after body)))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Callq 'read-int 0)))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'addq (list (Imm 32) (Reg 'rax)))))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'negq (list (Var 'x)))))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Instr 'pushq (list (Reg 'rbp)))))
+(interference-graph (list (list (Var 'u) (Var 'v))) (list (Retq)))
+
+
+; (define (g) (undirected-graph '()))
+
+; (g)
