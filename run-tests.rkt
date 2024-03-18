@@ -4,6 +4,8 @@
 (require "utilities.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
+(require "interp-Lif.rkt")
+(require "interp-Cif.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
 (debug-level 1)

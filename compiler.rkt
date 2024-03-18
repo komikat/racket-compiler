@@ -12,6 +12,10 @@
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
+(require "interp-Lif.rkt")
+(require "interp-Cif.rkt")
+(require "type-check-Lif.rkt")
+(require "type-check-Cif.rkt")
 (require "utilities.rkt")
 (require "interp.rkt")
 (provide (all-defined-out))
@@ -169,40 +173,7 @@
                               (X86Program info
                                           (concludify stack-space
                                                      (preludify stack-space body))))]))
-;; (X86Program
-;;  '((stack-space . 16) (stack-space . 16) (locals-types))
-;;  (list
-;;   (cons
-;;    'start
-;;    (Block
-;;     '((locals-types))
-;;     (list (Instr 'movq (list (Imm 42) (Reg 'rax))) (Jmp 'conclusion))))))
 
-;; (X86Program
-;;  '((stack-space . 16) (locals-types (g14345 . Integer)))
-;;  (list
-;;   (cons
-;;    'start
-;;    (Block
-;;     '((locals-types (g14345 . Integer)))
-;;     (list
-;;      (Instr 'movq (list (Imm 41) (Var 'g14345)))
-;;      (Instr 'movq (list (Var 'g14345) (Reg 'rax)))
-;;      (Instr 'addq (list (Imm 1) (Reg 'rax)))
-;;      (Jmp 'conclusion))))))
-
-
-
-
-;; reg ::= rsp | rbp | rax | rbx | rcx | rdx | rsi | rdi |
-;;         r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15
-;; arg ::= (Imm int) | (Reg reg) | (Deref reg int)
-;; instr ::= (Instr addq (arg arg)) | (Instr subq (arg arg)) |
-;;           (Instr negq (arg)) | (Instr movq (arg arg)) |
-;;           (Instr pushq (arg)) | (Instr popq (arg)) |
-;;           (Callq label int) | (Retq) | (Jmp label)
-;; block ::= (Block info (instr … ))
-;; x86Int ::= (X86Program info ((label . block) … ))
 
 ;; compute the set of locations read by an instruction
 ;; arg? -> (set)
@@ -273,14 +244,8 @@
     [(Var x) x]
     [(Imm m) '()] ;; TODO
     ))
-; register allocation
 
-;; Interference Graph
-;; for each instruction - edge between write location(s) and live locations, no interference with itself
-;; callq - edge between every live variable and every caller-saved register
-;; for movq s,d - if for every v in Lafter(k) if v!=d and v!=s, add edge(v,d)
-;; for other instructions - for every d in W(k) and v in Lafter(k), if v!=d, add edge(v,d)
-;; work from top to bottom
+; register allocation
 
 (define (find-edges live-after body)
   (foldr (lambda (live instr edges)
@@ -408,18 +373,38 @@
                                                                                                            list-vars))))))))]
     [else p]))
 
+
+;; Assignment 5
+
+(define (remove-and-or e)
+  (match e
+    [(Bool bool) (Bool bool)]
+    [(If e1 e2 e3) (If (remove-and-or e1) (remove-and-or e2) (remove-and-or e3))]
+    [(Prim 'and (list e1 e2)) (If (remove-and-or e1) (remove-and-or e2) (Bool #f))]
+    [(Prim 'or (list e1 e2)) (If (remove-and-or e1) (Bool #t) (remove-and-or e2))]
+    [(Prim 'not (list e1)) (Prim 'not (remove-and-or e1))]
+    [(Prim op (list e1 e2)) (Prim op (remove-and-or e1) (remove-and-or e2))]))
+
+(define (shrink p)
+  (match p
+    [(Program info body) (Program info (remove-and-or body))]))
+
+(shrink (Program '() (If (Prim 'and (list (Bool #t) (Bool #f))) (Bool #t) (Bool #f))))
+
+
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes
   `(
-    ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-    ("explicate control" ,explicate-control, interp-Cvar ,type-check-Cvar)
-    ("instruction selection" ,select-instructions ,interp-x86-0)
-    ;("assign homes" ,assign-homes ,interp-x86-0)
-    ("uncover live" ,uncover-live ,interp-x86-0)
-    ("build interference" ,build-interference ,interp-x86-0)
-    ("allocate registers" ,allocate-registers ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
+    ; ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+    ; ("explicate control" ,explicate-control, interp-Cvar ,type-check-Cvar)
+    ; ("instruction selection" ,select-instructions ,interp-x86-0)
+    ; ;("assign homes" ,assign-homes ,interp-x86-0)
+    ; ("uncover live" ,uncover-live ,interp-x86-0)
+    ; ("build interference" ,build-interference ,interp-x86-0)
+    ; ("allocate registers" ,allocate-registers ,interp-x86-0)
+    ; ("patch instructions" ,patch-instructions ,interp-x86-0)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+    ("shrink" ,shrink ,interp-Lif ,type-check-Lif)))
