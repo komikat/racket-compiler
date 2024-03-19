@@ -124,22 +124,65 @@
 
 (define (select_atm a)
   (match a
+    [(Bool #t) (Imm 1)]
+    [(Bool #f) (Imm 0)]
     [(Int n) (Imm n)]
     [(Var x) (Var x)]
     [(Reg reg) (Reg reg)]))
 
+; atm ::= (Bool bool)
+; cmp ::= eq?|<|<=|>|>=
+; exp ::= (Prim ’not (atm)) | (Prim ’cmp (atm atm))
+; tail ::= (Goto label) | (IfStmt (Prim cmp (atm atm)) (Goto label) (Goto label))
+; Cif ::= (CProgram info ((label . tail) ... ))
+
 (define (select_stmt e)
   (match e
+    [(Assign x (Bool #t)) (list (Instr 'movq (list (Imm 1) x)))]
+    [(Assign x (Bool #f)) (list (Instr 'movq (list (Imm 0) x)))]
     [(Assign x (Int n)) (list (Instr 'movq (list (Imm n) x)))]
     [(Assign x (Var y)) (list (Instr 'movq (list (Var y) x)))]
     [(Assign x (Prim '- (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'negq (list x)))]
+    [(Assign x (Prim 'not (list x))) (list (Instr 'xorq (list (Imm 1) x)))]
+    [(Assign x (Prim 'not (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'xorq (list (Imm 1) x)))]
     [(Assign x (Prim '+ (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'addq (list (select_atm atm2) x)))]
     [(Assign x (Prim '- (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'subq (list (select_atm atm2) x)))]
     [(Assign x (Prim 'read arg)) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]
-    ))
+    [(Assign x (Prim 'eq? (list atm1 atm2))) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                (Instr 'sete (list (Reg 'al)))
+                                                (Instr 'movzbq (list (Reg 'al) x)))]
+    [(Assign x (Prim '< (list atm1 atm2))) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                (Instr 'setl (list (Reg 'al)))
+                                                (Instr 'movzbq (list (Reg 'al) x)))]
+    [(Assign x (Prim '<= (list atm1 atm2))) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                (Instr 'setle (list (Reg 'al)))
+                                                (Instr 'movzbq (list (Reg 'al) x)))]
+    [(Assign x (Prim '> (list atm1 atm2))) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                (Instr 'setg (list (Reg 'al)))
+                                                (Instr 'movzbq (list (Reg 'al) x)))]
+    [(Assign x (Prim '>= (list atm1 atm2))) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                (Instr 'setge (list (Reg 'al)))
+                                                (Instr 'movzbq (list (Reg 'al) x)))]))
+
 
 (define (select_tail e)
   (match e
+    [(IfStmt (Prim 'eq? (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                                  (Instr 'je l1)
+                                                                  (Jmp l2))]
+    [(IfStmt (Prim '> (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                                  (Instr 'jg l1)
+                                                                  (Jmp l2))]
+    [(IfStmt (Prim '>= (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                                  (Instr 'jge l1)
+                                                                  (Jmp l2))]    
+    [(IfStmt (Prim '< (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                                  (Instr 'jl l1)
+                                                                  (Jmp l2))]
+    [(IfStmt (Prim '<= (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
+                                                                  (Instr 'jle l1)
+                                                                  (Jmp l2))]
+    [(Goto l) (Jmp l)]                                                                                                                                                                                                                                             
     [(Seq stmt tail) (append (select_stmt stmt) (select_tail tail))]
     [(Return ex) (append (select_stmt (Assign (Reg 'rax) ex)) (list (Jmp 'conclusion)))]))
 
@@ -439,5 +482,6 @@
     ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
     ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
-    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)))
+    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
+    ("instruction select" ,select-instructions ,interp-pseudo-x86-1)))
 
