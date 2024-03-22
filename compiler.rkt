@@ -20,6 +20,20 @@
 (require "interp.rkt")
 (provide (all-defined-out))
 
+(define (remove-and-or e)
+  (match e
+    [(or (Bool _) (Int _) (Var _)) e]
+    [(If e1 e2 e3) (If (remove-and-or e1) (remove-and-or e2) (remove-and-or e3))]
+    [(Prim 'and (list e1 e2)) (If (remove-and-or e1) (remove-and-or e2) (Bool #f))]
+    [(Prim 'or (list e1 e2)) (If (remove-and-or e1) (Bool #t) (remove-and-or e2))]
+    [(Prim op (list e1 e2)) (Prim op (list (remove-and-or e1) (remove-and-or e2)))]
+    [(Prim op (list e1)) (Prim op (list (remove-and-or e1)))]
+    [(Let x e body) (Let x (remove-and-or e) (remove-and-or body))]))
+
+(define (shrink p)
+  (match p
+    [(Program info body) (Program info (remove-and-or body))]))
+
 (define (uniquify-exp env)
   (lambda (e)
     (match e
@@ -51,7 +65,7 @@
       [(Prim op (list e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list (Var x)))))]
       [(Prim op (list e1 e2)) #:when (or (Int? e1) (Var? e1) (Bool? e1)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list e1 (Var x)))))]
       [(Prim op (list e1 e2)) #:when (or (Int? e2) (Var? e2)) (let [(x ((rco-atom env) e1))] (Let x ((rco-exp env) e1) (Prim op (list (Var x) e2))))]
-      [(Prim op (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2)) (Prim op (list (Var x) (Var y))))))]
+      [(Prim op (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2) (Prim op (list (Var x) (Var y)))))))]
       [(If e1 e2 e3) (If ((rco-exp env) e1) ((rco-exp env) e2) ((rco-exp env) e3))])))
       
 (define (rco-atom env)
@@ -80,7 +94,7 @@
     [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
     [(Let y rhs body) (explicate_assign rhs y (explicate_assign body x cont))]
     [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
-    [(If cnd thn els) (Seq (Assign (Var x) (explicate_pred cnd (explicate_tail thn) (explicate_tail els))) cont)]
+    [(If cnd thn els) (Seq (Assign (Var x) œ(explicate_pred cnd (explicate_tail thn) (explicate_tail els))))]
     [else (error "explicate_assign unhandled case" e)]))
 
 (define basic-blocks '())
@@ -116,10 +130,37 @@
                           (create_block (explicate_pred els^ thn els)))]
     [else (error "explicate_pred unhandled case" cnd)]))
 
+(define (explicate-wrap body info)
+  (set! basic-blocks (cons (cons 'start (explicate_tail body)) basic-blocks)) 
+  basic-blocks)
+
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
   (match p
-    [(Program info body) (CProgram info `((start . ,(explicate_tail body))))]))
+    [(Program info body) (CProgram info (explicate-wrap body info))]))
+
+(explicate-control (remove-complex-opera* (uniquify (shrink (Program
+ '()
+ (If
+  (If
+   (Prim '> (list (Int 4) (Int 8)))
+   (Prim 'eq? (list (Int 1) (Int 1)))
+   (Bool #f))
+  (Let
+   'g22647
+   (Int 4)
+   (Prim
+    '+
+    (list
+     (Prim '+ (list (Var 'g22647) (Int 8)))
+     (If
+      (If
+       (Prim 'eq? (list (Int 1) (Int 1)))
+       (Prim '<= (list (Var 'g22647) (Int 4)))
+       (Bool #t))
+      (Int 14)
+      (Int 0)))))
+  (Int 5)))))))
 
 
 (define (select_atm a)
@@ -443,23 +484,6 @@
                                                                                                            list-vars))))))))]
     [else p]))
 
-
-;; Assignment 5
-
-(define (remove-and-or e)
-  (match e
-    [(or (or (Bool _) (Int _)) (Var _)) e]
-    [(If e1 e2 e3) (If (remove-and-or e1) (remove-and-or e2) (remove-and-or e3))]
-    [(Prim 'and (list e1 e2)) (If (remove-and-or e1) (remove-and-or e2) (Bool #f))]
-    [(Prim 'or (list e1 e2)) (If (remove-and-or e1) (Bool #t) (remove-and-or e2))]
-    [(Prim op (list e1)) (Prim op (remove-and-or e1))]
-    [(Prim op (list e1 e2)) (Prim op (remove-and-or e1) (remove-and-or e2))]
-    [(Let x e body) (Let x (remove-and-or e) (remove-and-or body))]))
-
-(define (shrink p)
-  (match p
-    [(Program info body) (Program info (remove-and-or body))]))
-
 ; (shrink (Program '() (If (Prim 'and (list (Bool #t) (Let 'x (Int 4) (Prim 'or (list (Var 'x) (Prim 'not (list (Bool #f)))))))) (Bool #t) (Bool #f))))
 ; (shrink (Program '() (If (Prim 'and `(,(Prim '- '((Int 5))) ,(Bool #f))) (Int 42) (Int 42))))
 
@@ -482,6 +506,6 @@
     ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
     ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
-    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
-    ("instruction select" ,select-instructions ,interp-pseudo-x86-1)))
+    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)))
+    ; ("instruction select" ,select-instructions ,interp-pseudo-x86-1)))
 

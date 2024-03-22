@@ -28,6 +28,7 @@
 
 ;; The following tests the intermediate-language outputs of the passes.
 ; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
+; (interp-tests "if" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
 (interp-tests "if" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
 
 
