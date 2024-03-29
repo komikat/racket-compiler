@@ -1,3 +1,4 @@
-(if (let [(x 4)] (<= x 4)) 
-    (+ 2 (- 3 (- 8)))
-    (let [(x 1)] x))
+(let ([x (read)])
+  (let ([y (read)])
+    (if (if (< x 1) (eq? x 0) (eq? x 2)) (+ y 2)
+        (+ y 10))))

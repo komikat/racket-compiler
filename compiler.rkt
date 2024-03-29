@@ -1,29 +1,19 @@
 #lang racket
 
-(require racket/match)
-(require racket/list)
-(require racket/set)
-(require racket/set racket/stream)
-(require racket/fixnum)
-(require racket/match)
-(require graph)
-(require "interp-Lint.rkt")
-(require "interp-Lvar.rkt")
-(require "interp-Cvar.rkt")
-(require "type-check-Lvar.rkt")
-(require "type-check-Cvar.rkt")
+(require racket/match racket/list racket/set graph)
 (require "interp-Lif.rkt")
 (require "interp-Cif.rkt")
 (require "type-check-Lif.rkt")
 (require "type-check-Cif.rkt")
 (require "utilities.rkt")
-(require "interp.rkt")
 (provide (all-defined-out))
 
+(define basic-blocks '())
 (define (remove-and-or e)
   (match e
     [(or (Bool _) (Int _) (Var _)) e]
     [(If e1 e2 e3) (If (remove-and-or e1) (remove-and-or e2) (remove-and-or e3))]
+    [(Prim 'read '()) (Prim 'read '())]
     [(Prim 'and (list e1 e2)) (If (remove-and-or e1) (remove-and-or e2) (Bool #f))]
     [(Prim 'or (list e1 e2)) (If (remove-and-or e1) (Bool #t) (remove-and-or e2))]
     [(Prim op (list e1 e2)) (Prim op (list (remove-and-or e1) (remove-and-or e2)))]
@@ -94,10 +84,11 @@
     [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
     [(Let y rhs body) (explicate_assign rhs y (explicate_assign body x cont))]
     [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
-    [(If cnd thn els) (Seq (Assign (Var x) œ(explicate_pred cnd (explicate_tail thn) (explicate_tail els))))]
+    [(If e1 e2 e3) (let ([l1 (create_block cont)])
+                     (explicate_pred e1
+                                     (explicate_assign e2 x l1)
+                                     (explicate_assign e3 x l1)))]
     [else (error "explicate_assign unhandled case" e)]))
-
-(define basic-blocks '())
 
 (define (create_block tail) 
   (match tail
@@ -106,6 +97,7 @@
       (let ([label (gensym 'block)])
         (set! basic-blocks (cons (cons label tail) basic-blocks)) 
         (Goto label))]))
+
 
 (define (explicate_let_in_if e thn els)
   (match e
@@ -122,7 +114,7 @@
                 (create_block els) (create_block thn))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]
     [(Prim 'not (list e)) (explicate_pred e els thn)]
-    [(Prim op es)
+    [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
       (IfStmt (Prim op es) (create_block thn) (create_block els))]
     [(Bool b) (if b thn els)]
     [(If cnd^ thn^ els^) (explicate_pred cnd^ 
@@ -138,29 +130,6 @@
 (define (explicate-control p)
   (match p
     [(Program info body) (CProgram info (explicate-wrap body info))]))
-
-(explicate-control (remove-complex-opera* (uniquify (shrink (Program
- '()
- (If
-  (If
-   (Prim '> (list (Int 4) (Int 8)))
-   (Prim 'eq? (list (Int 1) (Int 1)))
-   (Bool #f))
-  (Let
-   'g22647
-   (Int 4)
-   (Prim
-    '+
-    (list
-     (Prim '+ (list (Var 'g22647) (Int 8)))
-     (If
-      (If
-       (Prim 'eq? (list (Int 1) (Int 1)))
-       (Prim '<= (list (Var 'g22647) (Int 4)))
-       (Bool #t))
-      (Int 14)
-      (Int 0)))))
-  (Int 5)))))))
 
 
 (define (select_atm a)
