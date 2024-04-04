@@ -6,9 +6,16 @@
 (require "type-check-Lif.rkt")
 (require "type-check-Cif.rkt")
 (require "utilities.rkt")
+(require "interp.rkt")
+(require "interp-Lint.rkt")
+(require "interp-Lvar.rkt")
+(require "interp-Cvar.rkt")
+(require "type-check-Lvar.rkt")
+(require "type-check-Cvar.rkt")
 (provide (all-defined-out))
 
 (define basic-blocks '())
+
 (define (remove-and-or e)
   (match e
     [(or (Bool _) (Int _) (Var _)) e]
@@ -77,6 +84,14 @@
     [(If cnd thn els) (explicate_pred cnd (explicate_tail thn) (explicate_tail els))]
     [else (error "explicate_tail unhandled case" e)]))
 
+(define (create_block tail) 
+  (match tail
+    [(Goto label) (Goto label)] 
+    [else 
+      (let ([label (gensym 'block)])
+        (set! basic-blocks (cons (cons label tail) basic-blocks)) 
+        (Goto label))]))
+
 (define (explicate_assign e x cont)
   (match e
     [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
@@ -89,15 +104,6 @@
                                      (explicate_assign e2 x l1)
                                      (explicate_assign e3 x l1)))]
     [else (error "explicate_assign unhandled case" e)]))
-
-(define (create_block tail) 
-  (match tail
-    [(Goto label) (Goto label)] 
-    [else 
-      (let ([label (gensym 'block)])
-        (set! basic-blocks (cons (cons label tail) basic-blocks)) 
-        (Goto label))]))
-
 
 (define (explicate_let_in_if e thn els)
   (match e
@@ -123,13 +129,30 @@
     [else (error "explicate_pred unhandled case" cnd)]))
 
 (define (explicate-wrap body info)
-  (set! basic-blocks (cons (cons 'start (explicate_tail body)) basic-blocks)) 
-  basic-blocks)
+  (let ([start (explicate_tail body)])
+    (set! basic-blocks (cons (cons 'start start) basic-blocks))
+    basic-blocks))
 
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
   (match p
     [(Program info body) (CProgram info (explicate-wrap body info))]))
+
+; (explicate-control (Program
+;  '()
+;  (Let
+;   'g22692
+;   (Prim 'read '())
+;   (Let
+;    'g22693
+;    (Prim 'read '())
+;    (If
+;     (If
+;      (Prim '< (list (Var 'g22692) (Int 1)))
+;      (Prim 'eq? (list (Var 'g22692) (Int 0)))
+;      (Prim 'eq? (list (Var 'g22692) (Int 2))))
+;     (Prim '+ (list (Var 'g22693) (Int 2)))
+;     (Prim '+ (list (Var 'g22693) (Int 10))))))))
 
 
 (define (select_atm a)
@@ -176,23 +199,31 @@
 
 
 (define (select_tail e)
+(print e)
   (match e
     [(IfStmt (Prim 'eq? (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
-                                                                  (Instr 'je l1)
-                                                                  (Jmp l2))]
+                                                                  ; (Instr 'je l1)
+                                                                  (JmpIf 'e l1)
+                                                                  (JmpIf 'l l2)
+                                                                  (JmpIf 'g l2))]
     [(IfStmt (Prim '> (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
-                                                                  (Instr 'jg l1)
-                                                                  (Jmp l2))]
+                                                                  ; (Instr 'jg l1)
+                                                                  (JmpIf 'g l1)
+                                                                  (JmpIf 'le l2))]
     [(IfStmt (Prim '>= (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
-                                                                  (Instr 'jge l1)
-                                                                  (Jmp l2))]    
+                                                                  ; (Instr 'jge l1)
+                                                                  (JmpIf 'ge l1)
+                                                                  (JmpIf 'l l2))]
     [(IfStmt (Prim '< (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
-                                                                  (Instr 'jl l1)
-                                                                  (Jmp l2))]
+                                                                  ; (Instr 'jl l1)
+                                                                  (JmpIf 'l l1)
+                                                                  (JmpIf 'ge l2))]
     [(IfStmt (Prim '<= (list atm1 atm2)) (Goto l1) (Goto l2)) (list (Instr 'cmpq (list (select_atm atm1) (select_atm atm2)))
-                                                                  (Instr 'jle l1)
-                                                                  (Jmp l2))]
-    [(Goto l) (Jmp l)]                                                                                                                                                                                                                                             
+                                                                  ; (Instr 'jle l1)
+                                                                  (JmpIf 'le l1)
+                                                                  (JmpIf 'g l2))]
+    [(Goto l) (list (Instr 'cmpq (list (Imm 1) (Imm 1)))
+                  (JmpIf 'le l))]                                                                                                                                                                                                                                             
     [(Seq stmt tail) (append (select_stmt stmt) (select_tail tail))]
     [(Return ex) (append (select_stmt (Assign (Reg 'rax) ex)) (list (Jmp 'conclusion)))]))
 
@@ -203,7 +234,9 @@
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
   (match p
-    [(CProgram info body) (X86Program (assign-stack-space info) `((start . ,(Block info (select_tail (cdr (car body)))))))]))
+    [(CProgram info body) (X86Program (assign-stack-space info) (foldr (lambda (block prog)
+                                                                          (cons `(,(car block) . ,(Block info (select_tail (cdr block)))) prog))
+                                                                        '() body))]))
 
 
 (define (patch_instr body)
@@ -261,8 +294,7 @@
   (match arg
     [(Reg r) (set r)]
     [(Var x) (set x)]
-    [(Imm m) (set)]
-    ))
+    [(Imm m) (set)]))
 
 (define caller-saved-regs (set 'rax 'rcx 'rdx 'rsi 'rdi 'r8 'r9 'r10 'r11))
 (define arg-passing-regs '(rdi rsi rdx rcx r8 r9))
@@ -475,6 +507,6 @@
     ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
     ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
-    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)))
-    ; ("instruction select" ,select-instructions ,interp-pseudo-x86-1)))
+    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
+    ("instruction select" ,select-instructions ,interp-pseudo-x86-1)))
 
