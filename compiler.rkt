@@ -12,6 +12,7 @@
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
+(require "multigraph.rkt")
 (provide (all-defined-out))
 
 (define basic-blocks '())
@@ -334,8 +335,7 @@
 ;; ([Instr?], set?) -> [set?]
 (define (instr-to-live-after instrs initial)
   (map (lambda (l-instr)
-         (foldr live-after-k-1 initial l-instr)) (sub-instr instrs))
-  )
+         (foldr live-after-k-1 initial l-instr)) (sub-instr instrs)))
 
 (define (update-blocks Block-pair)
   (match Block-pair
@@ -346,9 +346,117 @@
   (match Block-pair
     [(cons label (Block info instrs)) (cons label (instr-to-live-after instrs (set)))]))
 
+; (define (find-edge-list label tail)
+;   (foldl (lambda (instr edges)
+;             (cons (match instr
+;               [(JmpIf _ l) (label l)]
+;               [else null])))
+;         '() tail))
+
+; (define (create-cfg blocks)
+;   (tsort (transpose (make-multigraph (foldl (lambda (bl edges)
+;             (append (find-edge-list (car bl) (cdr bl))
+;                     edges))
+;         '() blocks)))))
+
+; (create-cfg 
+; ; (CProgram
+; ;  '((locals-types
+; ;     (g22693 . Integer)
+; ;     (g22682 . Integer)
+; ;     (g22698 . Integer)
+; ;     (g22681 . Integer)
+; ;     (g22652 . Boolean)
+; ;     (g22699 . Integer)
+; ;     (g22662 . Boolean)
+; ;     (g22692 . Integer)))
+;  (list
+;   (cons
+;    'start
+;    (Seq
+;     (Assign (Var 'g22698) (Prim 'read '()))
+;     (Seq
+;      (Assign (Var 'g22699) (Prim 'read '()))
+;      (IfStmt
+;       (Prim '< (list (Var 'g22698) (Int 1)))
+;       (Goto 'block22702)
+;       (Goto 'block22705)))))
+;   (cons
+;    'block22705
+;    (IfStmt
+;     (Prim 'eq? (list (Var 'g22698) (Int 2)))
+;     (Goto 'block22703)
+;     (Goto 'block22704)))
+;   (cons 'block22704 (Return (Prim '+ (list (Var 'g22699) (Int 10)))))
+;   (cons 'block22703 (Return (Prim '+ (list (Var 'g22699) (Int 2)))))
+;   (cons
+;    'block22702
+;    (IfStmt
+;     (Prim 'eq? (list (Var 'g22698) (Int 0)))
+;     (Goto 'block22700)
+;     (Goto 'block22701)))
+;   (cons 'block22701 (Return (Prim '+ (list (Var 'g22699) (Int 10)))))
+;   (cons 'block22700 (Return (Prim '+ (list (Var 'g22699) (Int 2)))))
+;   (cons
+;    'start
+;    (Seq
+;     (Assign (Var 'g22681) (Prim 'read '()))
+;     (Seq
+;      (Assign (Var 'g22682) (Prim 'read '()))
+;      (IfStmt
+;       (Prim '< (list (Var 'g22681) (Int 1)))
+;       (Goto 'block22685)
+;       (Goto 'block22688)))))
+;   (cons
+;    'block22688
+;    (IfStmt
+;     (Prim 'eq? (list (Var 'g22681) (Int 2)))
+;     (Goto 'block22686)
+;     (Goto 'block22687)))
+;   (cons 'block22687 (Return (Prim '+ (list (Var 'g22682) (Int 10)))))
+;   (cons 'block22686 (Return (Prim '+ (list (Var 'g22682) (Int 2)))))
+;   (cons
+;    'block22685
+;    (IfStmt
+;     (Prim 'eq? (list (Var 'g22681) (Int 0)))
+;     (Goto 'block22683)
+;     (Goto 'block22684)))
+;   (cons 'block22684 (Return (Prim '+ (list (Var 'g22682) (Int 10)))))
+;   (cons 'block22683 (Return (Prim '+ (list (Var 'g22682) (Int 2)))))
+;   (cons 'start (Return (Int 42)))
+;   (cons 'start (Seq (Assign (Var 'g22662) (Bool #f)) (Return (Int 42))))
+;   (cons 'start (Seq (Assign (Var 'g22652) (Bool #t)) (Return (Int 42))))
+;   (cons
+;    'start
+;    (Seq
+;     (Assign (Var 'g22692) (Prim 'read '()))
+;     (Seq
+;      (Assign (Var 'g22693) (Prim 'read '()))
+;      (IfStmt
+;       (Prim '< (list (Var 'g22692) (Int 1)))
+;       (Goto 'block22648)
+;       (Goto 'block22651)))))
+;   (cons
+;    'block22651
+;    (IfStmt
+;     (Prim 'eq? (list (Var 'g22692) (Int 2)))
+;     (Goto 'block22649)
+;     (Goto 'block22650)))
+;   (cons 'block22650 (Return (Prim '+ (list (Var 'g22693) (Int 10)))))
+;   (cons 'block22649 (Return (Prim '+ (list (Var 'g22693) (Int 2)))))
+;   (cons
+;    'block22648
+;    (IfStmt
+;     (Prim 'eq? (list (Var 'g22692) (Int 0)))
+;     (Goto 'block22646)
+;     (Goto 'block22647)))
+;   (cons 'block22647 (Return (Prim '+ (list (Var 'g22693) (Int 10)))))
+;   (cons 'block22646 (Return (Prim '+ (list (Var 'g22693) (Int 2)))))))
+
 (define (uncover-live p)
   (match p
     [(X86Program info Block-alist) (X86Program info (map update-blocks Block-alist))]))
+
 
 (define (get-final arg)
   (match arg
