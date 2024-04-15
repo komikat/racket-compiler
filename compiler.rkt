@@ -96,13 +96,11 @@
     [(If e1 e2 e3) (If (uncover-get!-exp set!-vars e1) (uncover-get!-exp set!-vars e2) (uncover-get!-exp set!-vars e3))]
     [(SetBang var rhs) (SetBang var (uncover-get!-exp set!-vars rhs))]
     [(Begin body rhs) (Begin (for/list ([e body]) (uncover-get!-exp set!-vars e)) (uncover-get!-exp set!-vars rhs))]
-    [(WhileLoop cnd e) (WhileLoop (uncover-get!-exp set!-vars cnd) (uncover-get!-exp set!-vars e))]
-    ))
+    [(WhileLoop cnd e) (WhileLoop (uncover-get!-exp set!-vars cnd) (uncover-get!-exp set!-vars e))]))
 
 (define (uncover-get! p)
   (match p
     [(Program info body) (Program info (uncover-get!-exp (collect-set! body) body))]))
-
 
 ; (uncover-get! 
 ;   (Program
@@ -115,22 +113,25 @@
 ;     (list (Var 'g28550) (Begin (list (SetBang 'g28550 (Int 40))) (Var 'g28550))))))
 ; )
 
-
-
 (define (rco-exp env)
   (lambda (e)
     (match e
+      [(Begin body (GetBang x)) (let [(y ((rco-atom env) x))] (Let y (Begin (for/list ([e body]) ((rco-exp env) e)) (Var x)) (Var y)))]
+      [(Begin body rhs) (Begin (for/list ([e body]) ((rco-exp env) e)) ((rco-exp env) rhs))]
+      [(SetBang var rhs) (SetBang var ((rco-exp env) rhs))]
+      [(GetBang var) (Var var)]
+      [(WhileLoop cnd e) (WhileLoop ((rco-exp env) cnd) ((rco-exp env) e))]
       [(Let x e body) (Let x ((rco-exp env) e) ((rco-exp env) body))]
-      [(or (Int _) (Var _) (Bool _)) e]
+      [(or (Int _) (Var _) (Bool _) (Void)) e]
       [(Prim 'read '()) (Prim 'read '())]
       [(Prim op (list (or (Int _) (Var _) (Bool _)))) e]
       [(Prim op (list (or (Int _) (Var _) (Bool _)) (or (Var _) (Int _) (Bool _)))) e]
       [(Prim op (list e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list (Var x)))))]
       [(Prim op (list e1 e2)) #:when (or (Int? e1) (Var? e1) (Bool? e1)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list e1 (Var x)))))]
-      [(Prim op (list e1 e2)) #:when (or (Int? e2) (Var? e2)) (let [(x ((rco-atom env) e1))] (Let x ((rco-exp env) e1) (Prim op (list (Var x) e2))))]
+      [(Prim op (list e1 e2)) #:when (or (Int? e2) (Var? e2) (Bool? e2)) (let [(x ((rco-atom env) e1))] (Let x ((rco-exp env) e1) (Prim op (list (Var x) e2))))]
       [(Prim op (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2) (Prim op (list (Var x) (Var y)))))))]
       [(If e1 e2 e3) (If ((rco-exp env) e1) ((rco-exp env) e2) ((rco-exp env) e3))])))
-      
+
 (define (rco-atom env)
   (lambda (e)
     (let [(x-uniq (gensym))] (dict-set env x-uniq e) x-uniq)))
@@ -591,5 +592,6 @@
     ("shrink" ,shrink ,interp-Lwhile ,type-check-Lwhile)
     ("uniquify" ,uniquify ,interp-Lwhile ,type-check-Lwhile)
     ("uncover get!" ,uncover-get! ,interp-Lwhile ,type-check-Lwhile)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile ,type-check-Lwhile)
     ))
 
