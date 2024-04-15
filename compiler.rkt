@@ -312,6 +312,14 @@
     ([Jmp _] (set)) ;; TODO
     ))
 
+;; The locations that are live before a jmp should be the locations in
+;; Lbefore at the target of the jump.  So, we recommend maintaining an
+;; alist named label->live that maps each label to the Lbefore for the
+;; first instruction in its block. For now the only jmp in a x86Var
+;; program is the jump to the conclusion. (For example, see figure
+;; 3.1.) The conclusion reads from rax and rsp, so the alist should
+;; map conclusion to the set {rax, rsp}.
+
 ;; locations read by an instruction
 ;; Instr? -> set?
 (define (read-locs instr)
@@ -328,7 +336,9 @@
 (define (live-after-k-1 instr live-after-k)
   (set-union (set-subtract live-after-k (write-locs instr)) (read-locs instr)))
 
-;; Int? -> list?
+;; returns a list of subsequences
+;; (x1 x2 ... xn) -> ((x1 ... xn) (x2 ... xn) ... (xn))
+;; list? -> [list?]
 (define (sub-instr l)
   (build-list (length l) (lambda (x) (drop l x))))
 
@@ -372,7 +382,6 @@
     ))
 
 ; register allocation
-
 (define (find-edges live-after body)
   (foldr (lambda (live instr edges)
            (append (match instr
