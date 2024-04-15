@@ -149,6 +149,11 @@
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
     [(Prim op es) (Return (Prim op es))]
     [(If cnd thn els) (explicate_pred cnd (explicate_tail thn) (explicate_tail els))]
+    [(Begin body rhs) (foldl 
+                        (lambda (e tail)
+                          (explicate_effect e tail))
+                        (explicate_tail rhs) body)]
+    [(WhileLoop cnd body) ]   ;need to complete
     [else (error "explicate_tail unhandled case" e)]))
 
 (define (create_block tail) 
@@ -194,6 +199,15 @@
                           (create_block (explicate_pred thn^ thn els)) 
                           (create_block (explicate_pred els^ thn els)))]
     [else (error "explicate_pred unhandled case" cnd)]))
+
+(define (explicate_effect e tail)
+  (match e
+    [(or (Bool _) (Int _) (Var _) (Void)) tail]
+    [(Prim op es) tail]
+    [(If cnd thn els) ]  ;need to complete
+    [(Let x rhs body) (Seq (explicate_assign rhs x (explicate_effect body tail)))]
+    [(SetBang x rhs) (Seq (explicate_assign rhs x tail))]
+    [(WhileLoop cnd body) ]))  ;need to complete
 
 (define (explicate-wrap body info)
   (let ([start (explicate_tail body)])
