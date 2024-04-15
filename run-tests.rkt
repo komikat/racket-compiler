@@ -7,6 +7,8 @@
 (require "interp-Lif.rkt")
 (require "interp-Cif.rkt")
 (require "interp.rkt")
+(require "interp-Lwhile.rkt")
+(require "interp-Cwhile.rkt")
 (require "compiler.rkt")
 (debug-level 1)
 ;; (AST-output-syntax 'concrete-syntax)
@@ -29,7 +31,8 @@
 ;; The following tests the intermediate-language outputs of the passes.
 ; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
 ; (interp-tests "if" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
-(interp-tests "if" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
+; (interp-tests "if" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
+(interp-tests "while" #f compiler-passes interp-Lwhile "while_test" (tests-for "while"))
 
 
 ;; Uncomment the following when all the passes are complete to
