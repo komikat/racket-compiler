@@ -146,14 +146,15 @@
     [(Bool b) (Return (Bool b))]
     [(Var x) (Return (Var x))]
     [(Int n) (Return (Int n))]
+    [(Void) (Return (Void))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
+    [(SetBang x rhs) (explicate_assign rhs x (Return (Void)))]
     [(Prim op es) (Return (Prim op es))]
     [(If cnd thn els) (explicate_pred cnd (explicate_tail thn) (explicate_tail els))]
     [(Begin body rhs) (foldl 
                         (lambda (e tail)
                           (explicate_effect e tail))
                         (explicate_tail rhs) body)]
-    [(WhileLoop cnd body) ]   ;need to complete
     [else (error "explicate_tail unhandled case" e)]))
 
 (define (create_block tail) 
@@ -166,6 +167,7 @@
 
 (define (explicate_assign e x cont)
   (match e
+    [(Void) (Seq (Assign (Var x) (Void)) cont)]
     [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
     [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
     [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
@@ -175,14 +177,20 @@
                      (explicate_pred e1
                                      (explicate_assign e2 x l1)
                                      (explicate_assign e3 x l1)))]
+    [(Begin body rhs) (foldl 
+                        (lambda (e tail)
+                          (explicate_effect e tail))
+                        (explicate_assign rhs x cont) body)]
+    [(SetBang x rhs) (Seq (Assign (Var x) (Void)) cont)]
     [else (error "explicate_assign unhandled case" e)]))
 
 (define (explicate_let_in_if e thn els)
   (match e
-    [(or (Bool _) (Int _) (Var _)) (explicate_pred e thn els)]
+    [(or (Bool _) (Int _) (Var _) (Void)) (explicate_pred e thn els)]
     [(Prim op es) (explicate_pred (Prim op es) thn els)]
     [(If _ _ _) (explicate_pred e thn els)]
-    [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]))
+    [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]
+    [(Begin body rhs) (explicate_pred (Begin body rhs) thn els)]))
 
 (define (explicate_pred cnd thn els) 
   (match cnd
@@ -192,22 +200,37 @@
                 (create_block els) (create_block thn))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]
     [(Prim 'not (list e)) (explicate_pred e els thn)]
-    [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
+    [(Prim op es) ;#:when (or (eq? op 'eq?) (eq? op '<))
       (IfStmt (Prim op es) (create_block thn) (create_block els))]
     [(Bool b) (if b thn els)]
     [(If cnd^ thn^ els^) (explicate_pred cnd^ 
                           (create_block (explicate_pred thn^ thn els)) 
                           (create_block (explicate_pred els^ thn els)))]
+    [(Begin body rhs) (foldl 
+                        (lambda (e tail)
+                          (explicate_effect e tail))
+                        (explicate_pred rhs thn els) body)]
     [else (error "explicate_pred unhandled case" cnd)]))
 
 (define (explicate_effect e tail)
   (match e
+    [(Begin body rhs) (foldl 
+                        (lambda (e t)
+                          (explicate_effect e t))
+                        (explicate_effect rhs tail) body)]
     [(or (Bool _) (Int _) (Var _) (Void)) tail]
     [(Prim op es) tail]
-    [(If cnd thn els) ]  ;need to complete
-    [(Let x rhs body) (Seq (explicate_assign rhs x (explicate_effect body tail)))]
-    [(SetBang x rhs) (Seq (explicate_assign rhs x tail))]
-    [(WhileLoop cnd body) ]))  ;need to complete
+    ; [(If cnd thn els) ]  ;need to complete
+    [(Let x rhs body) (explicate_assign rhs x (explicate_effect body tail))]
+    [(SetBang x rhs) (explicate_assign rhs x tail)]
+    [(WhileLoop cnd body) (let ([label (gensym 'block)])
+                            (begin (set! basic-blocks (cons 
+                                                        (cons label 
+                                                          (explicate_pred cnd 
+                                                            (create_block (explicate_effect body (Goto label)))
+                                                            (create_block tail))) 
+                                                        basic-blocks))
+                              (Goto label)))]))
 
 (define (explicate-wrap body info)
   (let ([start (explicate_tail body)])
@@ -219,22 +242,24 @@
   (match p
     [(Program info body) (CProgram info (explicate-wrap body info))]))
 
-; (explicate-control (Program
+; (Program
 ;  '()
 ;  (Let
-;   'g22692
-;   (Prim 'read '())
+;   'g28612
+;   (Int 5)
 ;   (Let
-;    'g22693
-;    (Prim 'read '())
-;    (If
-;     (If
-;      (Prim '< (list (Var 'g22692) (Int 1)))
-;      (Prim 'eq? (list (Var 'g22692) (Int 0)))
-;      (Prim 'eq? (list (Var 'g22692) (Int 2))))
-;     (Prim '+ (list (Var 'g22693) (Int 2)))
-;     (Prim '+ (list (Var 'g22693) (Int 10))))))))
-
+;    'g28613
+;    (Begin
+;     (list
+;      (WhileLoop
+;       (Let 'g28614 (Var 'g28612) (Prim '> (list (Var 'g28614) (Int 0))))
+;       (Begin
+;        '()
+;        (SetBang
+;         'g28612
+;         (Let 'g28615 (Var 'g28612) (Prim '- (list (Var 'g28615) (Int 1))))))))
+;     (Var 'g28612))
+;    (Var 'g28613))))
 
 (define (select_atm a)
   (match a
@@ -242,7 +267,9 @@
     [(Bool #f) (Imm 0)]
     [(Int n) (Imm n)]
     [(Var x) (Var x)]
-    [(Reg reg) (Reg reg)]))
+    [(Reg reg) (Reg reg)]
+    [(Void) (Imm 0)]
+    [(Imm n) (Imm n)]))
 
 ; atm ::= (Bool bool)
 ; cmp ::= eq?|<|<=|>|>=
@@ -252,10 +279,12 @@
 
 (define (select_stmt e)
   (match e
+    [(Prim 'read arg) (list (Callq 'read_int 0))]
     [(Assign x (Bool #t)) (list (Instr 'movq (list (Imm 1) x)))]
     [(Assign x (Bool #f)) (list (Instr 'movq (list (Imm 0) x)))]
     [(Assign x (Int n)) (list (Instr 'movq (list (Imm n) x)))]
     [(Assign x (Var y)) (list (Instr 'movq (list (Var y) x)))]
+    [(Assign x (Void)) (list (Instr 'movq (list (Imm 0) x)))]
     [(Assign x (Prim '- (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'negq (list x)))]
     [(Assign x (Prim 'not (list x))) (list (Instr 'xorq (list (Imm 1) x)))]
     [(Assign x (Prim 'not (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'xorq (list (Imm 1) x)))]
@@ -607,5 +636,7 @@
     ("uniquify" ,uniquify ,interp-Lwhile ,type-check-Lwhile)
     ("uncover get!" ,uncover-get! ,interp-Lwhile ,type-check-Lwhile)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile ,type-check-Lwhile)
+    ("explicate control" ,explicate-control ,interp-Cwhile ,type-check-Cwhile)
+    ; ("instruction select" ,select-instructions ,interp-pseudo-x86-1)
     ))
 
