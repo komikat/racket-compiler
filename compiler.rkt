@@ -14,6 +14,7 @@
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
 (require "interp.rkt")
+(require "graph-printing.rkt")
 (provide (all-defined-out))
 
 (define (uniquify-exp env)
@@ -125,6 +126,7 @@
 (define (patch_instr body)
   (foldr (lambda (inst lst)
            (match inst
+             [(Instr instr (list (Deref 'rbp n1) (Deref 'rbp n2))) #:when (eq? n1 n2) (remove instr lst)]
              [(Instr instr (list (Deref 'rbp n1) (Deref 'rbp n2))) 
               (append (list (Instr 'movq (list (Deref 'rbp n1) (Reg 'rax))) (Instr instr (list (Reg 'rax) (Deref 'rbp n2)))) lst)]
              [(Instr instr (list (Imm n)))
@@ -149,26 +151,7 @@
   (string->uninterned-symbol (if (eq? (system-type 'os) 'macosx)
                                  (string-append "_" str)
                                  str)))
-;; add prelude to the body
-(define (preludify stack-space body)
-  (append body (list `(main . ,(Block '() (list (Instr 'pushq (list (Reg 'rbp)))
-                                                              (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
-                                                              (Instr 'subq (list (Imm stack-space) (Reg 'rsp)))
-                                                              (Jmp 'start)))))))
-;; add conclusion to the body
-(define (concludify stack-space body)
-  (append body (list `(conclusion . ,(Block '() (list (Instr 'addq (list (Imm stack-space) (Reg 'rsp)))
-                                                                    (Instr 'popq (list (Reg 'rbp)))
-                                                                    (Retq)))))))
 
-
-;; prelude-and-conclusion : x86int -> x86int
-(define (prelude-and-conclusion p)
-  (match p
-    [(X86Program info body) (let [(stack-space (cdr (assoc 'stack-space info)))]
-                              (X86Program info
-                                          (concludify stack-space
-                                                     (preludify stack-space body))))]))
 ;; (X86Program
 ;;  '((stack-space . 16) (stack-space . 16) (locals-types))
 ;;  (list
@@ -211,9 +194,11 @@
     [(Reg r) (set r)]
     [(Var x) (set x)]
     [(Imm m) (set)]
+    [(Deref r i) (set r)]
     ))
 
 (define caller-saved-regs (set 'rax 'rcx 'rdx 'rsi 'rdi 'r8 'r9 'r10 'r11))
+(define callee-saved-regs '(rsp rbp rbx r12 r13 r14 r15))
 (define arg-passing-regs '(rdi rsi rdx rcx r8 r9))
 
 ;; locations written by an instruction
@@ -316,14 +301,14 @@
   (map (lambda (block)
          (match block
            [(cons x (Block info e)) (cons x (Block (dict-set info 'conflicts (interference-graph (cdr (assoc 'live-after info)) e)) e))]))
-        body))
+       body))
 
 (define (build-interference p)
   (match p
     [(X86Program info body) (X86Program info (build-blocks body))]))
 
 (define init-colors (hash 'rcx 0 'rdx 1 'rsi 2 'rdi 3 'r8 4 'r9 5 'r10 6 'rbx 7 'r12 8 'r13 9 'r14 10 'rax -1 'rsp -2 'rbp -3 'r11 -4 'r15 -5))
-(define color-regs (hash 0 'rcx 1 'rdx 2 'rsi 3 'rdi 4 'r8 5 'r9 6 'r10 7 'rbx 8 'r12 9 'r13 10 'r14))
+(define color-regs (hash 0 'rcx 1 'rdx 2 'rsi 3 'rdi 4 'r8 5 'r9 6 'r10 7 'rbx 8 'r12 9 'r13))
 
 
 ;; greedy
@@ -355,36 +340,64 @@
   (apply min (remove-values
               (map (lambda (register) (hash-ref colors register))
                    (filter (lambda (x) (hash-has-key? colors x)) adjacent))
-              (build-list 100 values))))
+              (build-list (hash-count colors) values))))
 
 (define (color-graph graph vars [colors init-colors])
   (if (eq? (length vars) 0) colors
       (let [(highest-satur-var (key-with-highest-value (compute-saturation-hash-count graph colors vars)))]
-        (color-graph graph (remove highest-satur-var vars)
-                     (hash-set colors highest-satur-var (lowest-color colors (get-neighbors graph highest-satur-var))))))
+        (println vars)
+        (let [(final (color-graph graph (remove highest-satur-var vars)
+                                  (hash-set colors highest-satur-var (lowest-color colors (get-neighbors graph highest-satur-var)))))]
+          (println "asdasdasd")
+          (println final)
+          final
+          )
+ ))
   )
 
 ;; take every variable
 ;; get color from color-graph
 ;; get color register (if in bounds)
 ;; else pass to assign stack
-
 (define (assign-register list-vars color-graph)
   (define var-to-register-hash (make-hash))
+  (define spill-list '())
   (for-each (lambda (var)
               (let ((color (hash-ref color-graph var)))
-                (let ((register (hash-ref color-regs color)))
-                  (hash-set! var-to-register-hash var (Reg register)))))
+                (if (>= color (hash-count color-regs))
+                    (set! spill-list (cons var spill-list))                    
+                    (let ((register (hash-ref color-regs color)))
+                      (hash-set! var-to-register-hash var (Reg register))))))
             list-vars)
-  var-to-register-hash)
+  (println "===varreg===")
+
+  (println var-to-register-hash)
+
+  (define callee-length (set-count (get-used-callee var-to-register-hash)))
+  (assign-stack spill-list var-to-register-hash callee-length))
 
 ;; assign variables in list from info to a hash map with stack locations
-(define (assign-stack list-vars var-register-hashmap)
+(define (assign-stack list-vars var-register-hashmap callee-length)
   (let ([var-hashmap var-register-hashmap])
     (map (lambda (var id)
-           (hash-set! var-hashmap (car var) (Deref 'rbp (- (* 8 (+ 1 id)))))
+           (hash-set! var-hashmap var (Deref 'rbp (- (* 8 (+ callee-length 1 id)))))
            ) list-vars (range (length list-vars)))
     var-hashmap))
+
+
+(define (get-used-callee var-hashmap)
+  (set-remove (list->set (hash-map var-hashmap (lambda (variable location)
+                                                 (match location
+                                                   [(Reg x) #:when (not (eq? #f (member x callee-saved-regs))) x]
+                                                   [else '()]
+                                                   )))) '()))
+
+(define (get-stack-locations var-hashmap)
+  (set-remove (list->set (hash-map var-hashmap (lambda (variable location)
+                                                 (match location
+                                                   [(Deref 'rbp x) x]
+                                                   [else '()]
+                                                   )))) '()))
 
 ;; take variables inside body and then replace them with their
 ;; corresponding entries in the hashmap
@@ -403,10 +416,50 @@
     [(X86Program info (list (cons 'start (Block bl-info body))))
      #:when (list? (assoc 'locals-types info))
      (let ([list-vars (map car (cdr (assoc 'locals-types bl-info)))])
-       (X86Program info (list (cons 'start (Block bl-info (replace-var body (assign-register list-vars
-                                                                                             (color-graph (cdr (assoc 'conflicts bl-info))
-                                                                                                           list-vars))))))))]
+       (let ((var-hashmap (assign-register list-vars
+                                           (color-graph (cdr (assoc 'conflicts bl-info))
+                                                        list-vars))))
+         (X86Program (dict-set
+                      (dict-set info 'used-callee (get-used-callee var-hashmap))
+                      'stack-locs (get-stack-locations var-hashmap))
+                     (list (cons 'start (Block bl-info (replace-var body var-hashmap)))))))]
     [else p]))
+
+(define (get-S p)
+  (match p
+    [(X86Program info body) (set-count (cdr (assoc 'stack-locs info)))]))
+
+(define (program->used-callee p)
+  (match p
+    [(X86Program info body) (cdr (assoc 'used-callee info))]))
+
+
+
+;; add prelude to the body
+(define (preludify used-callee stack-space body)
+  (append body (list `(main . ,(Block '() (append (list (Instr 'pushq (list (Reg 'rbp)))
+                                                        (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
+                                                        (Instr 'subq (list (Imm stack-space) (Reg 'rsp))))
+                                                (set-map used-callee (lambda (r) (Instr 'pushq (list (Reg r)))))
+                                                (list (Jmp 'start))))))))
+;; add conclusion to the body
+(define (concludify used-callee stack-space body)
+  (append body (list `(conclusion . ,(Block '() (append (list (Instr 'addq (list (Imm stack-space) (Reg 'rsp))))
+                                                        (set-map used-callee (lambda (r) (Instr 'popq (list (Reg r)))))
+                                                        (list  (Instr 'popq (list (Reg 'rbp)))
+                                                               (Retq))))))))
+
+
+;; prelude-and-conclusion : x86int -> x86int
+(define (prelude-and-conclusion p)
+  (define used-callee (program->used-callee p))
+  (define C (set-count used-callee))
+  (define S (get-S p))
+  (define A (- (align (* 8 (+ S C)) 16) (* 8 C)))
+  (match p
+    [(X86Program info body) (X86Program info
+                                        (concludify used-callee A
+                                                    (preludify used-callee A body)))]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
