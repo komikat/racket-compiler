@@ -15,6 +15,7 @@
 (require "utilities.rkt")
 (require "interp.rkt")
 (require "graph-printing.rkt")
+(require "priority_queue.rkt")
 (provide (all-defined-out))
 
 (define (uniquify-exp env)
@@ -197,8 +198,6 @@
     [(Deref r i) (set r)]
     ))
 
-(define caller-saved-regs (set 'rax 'rcx 'rdx 'rsi 'rdi 'r8 'r9 'r10 'r11))
-(define callee-saved-regs '(rsp rbp rbx r12 r13 r14 r15))
 (define arg-passing-regs '(rdi rsi rdx rcx r8 r9))
 
 ;; locations written by an instruction
@@ -209,7 +208,7 @@
     [(Instr q (list a)) #:when (member q (list 'negq)) (get-loc a)] ;; ASSUMPTION: pushq popq are not reading the locations
     [(Instr 'movq (list _ a2)) (get-loc a2)]
     [(Retq) (set)]
-    ([Callq _ _] caller-saved-regs) 
+    ([Callq _ _] caller-save) 
     ([Jmp _] (set)) ;; TODO
     ))
 
@@ -307,53 +306,50 @@
   (match p
     [(X86Program info body) (X86Program info (build-blocks body))]))
 
-(define init-colors (hash 'rcx 0 'rdx 1 'rsi 2 'rdi 3 'r8 4 'r9 5 'r10 6 'rbx 7 'r12 8 'r13 9 'r14 10 'rax -1 'rsp -2 'rbp -3 'r11 -4 'r15 -5))
 (define color-regs (hash 0 'rcx 1 'rdx 2 'rsi 3 'rdi 4 'r8 5 'r9 6 'r10 7 'rbx 8 'r12 9 'r13))
-
 
 ;; greedy
 ;; graph?, hash? -> [set?]
-(define (compute-saturation-hash-count graph colors vars)
-  (define saturation-hash (make-hash))
-  (for-each (lambda (vertex)
-              (let ((saturation-set (list->set (map (lambda (neighbor) (hash-ref colors neighbor))
-                                                    (filter (lambda (neighbor) (hash-has-key? colors neighbor))
-                                                            (get-neighbors graph vertex))))))
-                (hash-set! saturation-hash vertex (set-count saturation-set))))
-            vars)
-  saturation-hash)
+(define (update-num-spills spills c)
+  (cond [(>= c (num-registers-for-alloc))
+         (add1 spills)]
+        [else spills]
+        ))
 
-(define (key-with-highest-value hash-table)
-  (car (let ((key-value-pairs (hash-map hash-table (lambda (key value) (cons key value)))))
-         (foldl (lambda (pair current-best)
-                  (if (or (not current-best) (> (cdr pair) (cdr current-best)))
-                      pair
-                      current-best))
-                #f
-                key-value-pairs))))
+(define (color-graph graph info)
+  (define locals (map car (dict-ref info 'locals-types)))
+  (define num-spills 0)
+  (define uncolors (make-hash))
+  (define (compare u v)
+    (>= (set-count (hash-ref uncolors u))
+        (set-count (hash-ref uncolors v))))
+  (define Q (make-pqueue compare))
+  (define pq->node (make-hash))
+  (define var->color (make-hash))
 
-(define (remove-values small big)
-  (filter (lambda (x) (not (member x small))) big))
+  (for ([x locals])
+    (define adj-reg
+      (filter (lambda (u) (set-member? registers u))
+              (get-neighbors graph x)))
+    (define adj-colors (list->set (map register->color adj-reg)))
+    (hash-set! uncolors x adj-colors)
+    (hash-set! pq->node x (pqueue-push! Q x)))
 
-;; lowest color not in adjacent
-(define (lowest-color colors adjacent)
-  (apply min (remove-values
-              (map (lambda (register) (hash-ref colors register))
-                   (filter (lambda (x) (hash-has-key? colors x)) adjacent))
-              (build-list (hash-count colors) values))))
-
-(define (color-graph graph vars [colors init-colors])
-  (if (eq? (length vars) 0) colors
-      (let [(highest-satur-var (key-with-highest-value (compute-saturation-hash-count graph colors vars)))]
-        (println vars)
-        (let [(final (color-graph graph (remove highest-satur-var vars)
-                                  (hash-set colors highest-satur-var (lowest-color colors (get-neighbors graph highest-satur-var)))))]
-          (println "asdasdasd")
-          (println final)
-          final
-          )
- ))
-  )
+  
+  (while (> (pqueue-count Q) 0)
+    (define v (pqueue-pop! Q))
+    (define c (for/first ([c (in-naturals)]
+                          #:when (not (set-member? (hash-ref uncolors v) c)))
+                c))
+    (verbose (format "color of ~a is ~a" v c))
+    (set! num-spills (update-num-spills num-spills c))
+    (hash-set! var->color v c)
+    (for ([u (in-neighbors graph v)])
+      (when (not (set-member? registers u))
+        (hash-set! uncolors u
+                   (set-add (hash-ref uncolors u) c))
+        (pqueue-decrease-key! Q (hash-ref pq->node u)))))
+  (cons var->color num-spills))
 
 ;; take every variable
 ;; get color from color-graph
@@ -388,7 +384,7 @@
 (define (get-used-callee var-hashmap)
   (set-remove (list->set (hash-map var-hashmap (lambda (variable location)
                                                  (match location
-                                                   [(Reg x) #:when (not (eq? #f (member x callee-saved-regs))) x]
+                                                   [(Reg x) #:when (not (eq? #f (set-member? callee-save x))) x]
                                                    [else '()]
                                                    )))) '()))
 
@@ -410,24 +406,26 @@
            [(Instr instr (list atm (Var x))) (Instr instr (list atm (hash-ref var-hashmap x)))]
            [else inst])) body))
 
-;; assign-homes : x86var -> x86var
 (define (allocate-registers p)
   (match p
     [(X86Program info (list (cons 'start (Block bl-info body))))
      #:when (list? (assoc 'locals-types info))
+     
      (let ([list-vars (map car (cdr (assoc 'locals-types bl-info)))])
-       (let ((var-hashmap (assign-register list-vars
-                                           (color-graph (cdr (assoc 'conflicts bl-info))
-                                                        list-vars))))
+       (define colored-graph-result (color-graph (cdr (assoc 'conflicts bl-info)) info))
+       (define num-spills (cdr colored-graph-result))
+       (define colored-graph (car colored-graph-result))
+       (let ((var-hashmap (assign-register list-vars colored-graph)))
          (X86Program (dict-set
                       (dict-set info 'used-callee (get-used-callee var-hashmap))
-                      'stack-locs (get-stack-locations var-hashmap))
+                      'stack-locs num-spills)
                      (list (cons 'start (Block bl-info (replace-var body var-hashmap)))))))]
     [else p]))
 
+
 (define (get-S p)
   (match p
-    [(X86Program info body) (set-count (cdr (assoc 'stack-locs info)))]))
+    [(X86Program info body) (cdr (assoc 'stack-locs info))]))
 
 (define (program->used-callee p)
   (match p
