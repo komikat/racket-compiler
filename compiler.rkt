@@ -12,21 +12,34 @@
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
+(require "interp-Lwhile.rkt")
+(require "interp-Cwhile.rkt")
+(require "type-check-Lwhile.rkt")
+(require "type-check-Cwhile.rkt")
+(require "interp-Lvec.rkt")
+(require "interp-Lvec-prime.rkt")
+(require "interp-Cvec.rkt")
+(require "type-check-Lvec.rkt")
+(require "type-check-Cvec.rkt")
 (require "multigraph.rkt")
+; (require "runtime.c")
 (provide (all-defined-out))
 
 (define basic-blocks '())
 
 (define (remove-and-or e)
   (match e
+    [(Void) (Void)]
     [(or (Bool _) (Int _) (Var _)) e]
     [(If e1 e2 e3) (If (remove-and-or e1) (remove-and-or e2) (remove-and-or e3))]
     [(Prim 'read '()) (Prim 'read '())]
     [(Prim 'and (list e1 e2)) (If (remove-and-or e1) (remove-and-or e2) (Bool #f))]
     [(Prim 'or (list e1 e2)) (If (remove-and-or e1) (Bool #t) (remove-and-or e2))]
-    [(Prim op (list e1 e2)) (Prim op (list (remove-and-or e1) (remove-and-or e2)))]
-    [(Prim op (list e1)) (Prim op (list (remove-and-or e1)))]
-    [(Let x e body) (Let x (remove-and-or e) (remove-and-or body))]))
+    [(Prim op es) (Prim op (for/list ([e es]) (remove-and-or e)))]
+    [(Let x ex body) (Let x (remove-and-or ex) (remove-and-or body))]
+    [(SetBang var rhs) (SetBang var (remove-and-or rhs))]
+    [(Begin body rhs) (Begin (for/list ([e body]) (remove-and-or e)) (remove-and-or rhs))]
+    [(WhileLoop cnd ex) (WhileLoop (remove-and-or cnd) (remove-and-or ex))]))
 
 (define (shrink p)
   (match p
@@ -35,6 +48,7 @@
 (define (uniquify-exp env)
   (lambda (e)
     (match e
+      [(Void) (Void)]
       [(Var x) (Var (dict-ref env x))]
       [(or (Int _) (Bool _)) e]
       [(Let x e body) (let [(x-uniq (gensym))]
@@ -42,30 +56,128 @@
                           (Let x-uniq (new-uniq-pass e) (new-uniq-pass body))))]
       [(If e1 e2 e3) (If ((uniquify-exp env) e1) ((uniquify-exp env) e2) ((uniquify-exp env) e3))]
       [(Prim op es)
-       (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
+       (Prim op (for/list ([e es]) ((uniquify-exp env) e)))]
+      [(SetBang var rhs) (SetBang (dict-ref env var) ((uniquify-exp env) rhs))]
+      [(Begin body rhs) (Begin (for/list ([e body]) ((uniquify-exp env) e)) ((uniquify-exp env) rhs))]
+      [(WhileLoop cnd e) (WhileLoop ((uniquify-exp env) cnd) ((uniquify-exp env) e))])))
 
 ;; uniquify : Lvar -> Lvar
 (define (uniquify p)
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
-; (uniquify (Program '() (Let 'x (Int 15) (Let 'y (Prim '+ (list (Int 5) (Int 4))) (Prim '+ (list (Int 10) (Prim '- (list (Var 'x) (Var 'y)))))))))
-; (uniquify (Program '() (If (Prim 'and (list (Bool #t) (Bool #f))) (Bool #t) (Bool #f))))
+(define (collect-set! e) 
+  (match e
+    [(Void) (set)]
+    [(Var x) (set)] 
+    [(Int n) (set)] 
+    [(Bool b) (set)]
+    [(Let x rhs body) (set-union (collect-set! rhs) (collect-set! body))]
+    [(SetBang var rhs) (set-union (set var) (collect-set! rhs))]
+    [(If cnd thn els) (set-union (collect-set! cnd) (collect-set! thn) (collect-set! els))]
+    [(Begin body rhs) (set-union 
+                        (foldr 
+                          (lambda (es set!-vars)
+                            (set-union (collect-set! es) set!-vars))
+                          (collect-set! rhs) body)
+                        (collect-set! rhs))]
+    [(WhileLoop cnd e) (set-union (collect-set! cnd) (collect-set! e))]
+    [(Prim op es) (foldr 
+                    (lambda (sub-es set!-vars)
+                      (set-union (collect-set! sub-es) set!-vars))
+                    (set) es)]))
+
+(define (uncover-get!-exp set!-vars e) 
+  (match e
+    [(Void) e]
+    [(Var x)
+      (if (set-member? set!-vars x)
+        (GetBang x)
+            (Var x))]
+    [(or (Int _) (Bool _)) e]
+    [(Prim op es) (Prim op (for/list ([e es]) (uncover-get!-exp set!-vars e)))]
+    [(Let x rhs body) (Let x (uncover-get!-exp set!-vars rhs) (uncover-get!-exp set!-vars body))]
+    [(If e1 e2 e3) (If (uncover-get!-exp set!-vars e1) (uncover-get!-exp set!-vars e2) (uncover-get!-exp set!-vars e3))]
+    [(SetBang var rhs) (SetBang var (uncover-get!-exp set!-vars rhs))]
+    [(Begin body rhs) (Begin (for/list ([e body]) (uncover-get!-exp set!-vars e)) (uncover-get!-exp set!-vars rhs))]
+    [(WhileLoop cnd e) (WhileLoop (uncover-get!-exp set!-vars cnd) (uncover-get!-exp set!-vars e))]))
+
+(define (uncover-get! p)
+  (match p
+    [(Program info body) (Program info (uncover-get!-exp (collect-set! body) body))]))
+
+(define (expose-has-type es type)
+  (Let (gensym "_") (If (Prim '< 
+                          (list (Prim '+ 
+                                  (list (GlobalValue 'free_ptr)
+                                    (Int (+ 8 (* 8 (length es))))))
+                                  (GlobalValue 'fromspace_end)))
+                          (Void)
+                          (Collect (+ 8 (* 8 (length es)))))
+    (let ([v (gensym "vecinit")])
+      (let ([i -1])
+        (Let v (Allocate (length es) type)
+          (foldl 
+            (lambda (x ex)
+              (set! i (+ i 1))
+              (Let (gensym "_") 
+                (Prim 'vector-set! (list (Var v) (Int i) (expose-allocate x)))
+                ex))
+             (Var v) es))))))
+
+(define (expose-allocate e)
+  (match e
+    [(HasType (Prim 'vector es) type) (expose-has-type es type)]
+    [(or (Int _) (Var _) (Bool _) (Void) (GetBang _)) e]
+    [(Prim op es) (Prim op (for/list [(e es)] (expose-allocate e)))]
+    [(Let x rhs body) (Let x (expose-allocate rhs) (expose-allocate body))]
+    [(If e1 e2 e3) (If (expose-allocate e1) (expose-allocate e2) (expose-allocate e3))]
+    [(SetBang x rhs) (SetBang x (expose-allocate rhs))]
+    [(Begin body rhs) (Begin (for/list [(e body)] (expose-allocate e)) (expose-allocate rhs))]
+    [(WhileLoop cnd body) (WhileLoop (expose-allocate cnd) (expose-allocate body))]))
+
+(define (expose-allocation p)
+  (match p
+    [(Program info body) (Program info (expose-allocate body))]))
 
 (define (rco-exp env)
   (lambda (e)
     (match e
+      [(Begin body (GetBang x)) (let [(y ((rco-atom env) x))] (Let y (Begin (for/list ([e body]) ((rco-exp env) e)) (Var x)) (Var y)))]
+      [(Begin body rhs) (Begin (for/list ([e body]) ((rco-exp env) e)) ((rco-exp env) rhs))]
+      [(SetBang var rhs) (SetBang var ((rco-exp env) rhs))]
+      [(GetBang var) (Var var)]
+      [(WhileLoop cnd e) (WhileLoop ((rco-exp env) cnd) ((rco-exp env) e))]
       [(Let x e body) (Let x ((rco-exp env) e) ((rco-exp env) body))]
-      [(or (Int _) (Var _) (Bool _)) e]
+      [(or (Int _) (Var _) (Bool _) (Void)) e]
       [(Prim 'read '()) (Prim 'read '())]
       [(Prim op (list (or (Int _) (Var _) (Bool _)))) e]
       [(Prim op (list (or (Int _) (Var _) (Bool _)) (or (Var _) (Int _) (Bool _)))) e]
       [(Prim op (list e2)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list (Var x)))))]
-      [(Prim op (list e1 e2)) #:when (or (Int? e1) (Var? e1) (Bool? e1)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) (Prim op (list e1 (Var x)))))]
-      [(Prim op (list e1 e2)) #:when (or (Int? e2) (Var? e2)) (let [(x ((rco-atom env) e1))] (Let x ((rco-exp env) e1) (Prim op (list (Var x) e2))))]
+      [(Prim op (list e1 e2)) #:when (or (Int? e1) (Var? e1) (Bool? e1) (Void? e1)) (let [(x ((rco-atom env) e2))] (Let x ((rco-exp env) e2) ((rco-exp env) (Prim op (list e1 (Var x))))))]
+      [(Prim op (list e1 e2)) #:when (or (Int? e2) (Var? e2) (Bool? e2) (Void? e2)) (let [(x ((rco-atom env) e1))] (Let x ((rco-exp env) e1) ((rco-exp env) (Prim op (list (Var x) e2)))))]
       [(Prim op (list e1 e2)) (let [(x ((rco-atom env) e1))] (let [(y ((rco-atom env) e2))] (Let x ((rco-exp env) e1) (Let y ((rco-exp env) e2) (Prim op (list (Var x) (Var y)))))))]
-      [(If e1 e2 e3) (If ((rco-exp env) e1) ((rco-exp env) e2) ((rco-exp env) e3))])))
-      
+      [(If e1 e2 e3) (If ((rco-exp env) e1) ((rco-exp env) e2) ((rco-exp env) e3))]
+      [(Collect _) e]
+      [(Allocate _ _) e]
+      [(GlobalValue _) e]
+      [(Prim op (list e1 e2 e3)) 
+        #:when (not (or (Int? e1) (Var? e1) (Bool? e1) (Void? e1)))
+          (let [(x (gensym))]
+            (Let x ((rco-exp env) e1)
+              ((rco-exp env) (Prim op (list (Var x) e2 e3)))))]
+      [(Prim op (list e1 e2 e3)) 
+        #:when (not (or (Int? e2) (Var? e2) (Bool? e2) (Void? e2)))
+          (let [(x (gensym))]
+            (Let x ((rco-exp env) e2)
+              ((rco-exp env) (Prim op (list e1 (Var x) e3)))))]
+      [(Prim op (list e1 e2 e3)) 
+        #:when (not (or (Int? e3) (Var? e3) (Bool? e3) (Void? e3)))
+          (let [(x (gensym))]
+            (Let x ((rco-exp env) e3)
+              ((rco-exp env) (Prim op (list e1 e2 (Var x))))))]
+      [(Prim op (list _ _ _)) e])))
+
 (define (rco-atom env)
   (lambda (e)
     (let [(x-uniq (gensym))] (dict-set env x-uniq e) x-uniq)))
@@ -77,12 +189,16 @@
 
 (define (explicate_tail e)
   (match e
-    [(Bool b) (Return (Bool b))]
-    [(Var x) (Return (Var x))]
-    [(Int n) (Return (Int n))]
+    [(or (Bool _) (Var _) (Int _) (Void) (Allocate _ _) (GlobalValue _)) (Return e)]
+    [(Collect _) (Seq e (Return (Void)))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
+    [(SetBang x rhs) (explicate_assign rhs x (Return (Void)))]
     [(Prim op es) (Return (Prim op es))]
     [(If cnd thn els) (explicate_pred cnd (explicate_tail thn) (explicate_tail els))]
+    [(Begin body rhs) (foldl 
+                        (lambda (e tail)
+                          (explicate_effect e tail))
+                        (explicate_tail rhs) body)]
     [else (error "explicate_tail unhandled case" e)]))
 
 (define (create_block tail) 
@@ -95,6 +211,8 @@
 
 (define (explicate_assign e x cont)
   (match e
+    [(or (GlobalValue _) (Allocate _ _)) (Seq (Assign (Var x) e) cont)]
+    [(or (Collect _) (Void)) (Seq (Assign (Var x) (Void)) cont)]
     [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
     [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
     [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
@@ -104,14 +222,20 @@
                      (explicate_pred e1
                                      (explicate_assign e2 x l1)
                                      (explicate_assign e3 x l1)))]
+    [(Begin body rhs) (foldl 
+                        (lambda (e tail)
+                          (explicate_effect e tail))
+                        (explicate_assign rhs x cont) body)]
+    [(SetBang x rhs) (Seq (Assign (Var x) (Void)) cont)]
     [else (error "explicate_assign unhandled case" e)]))
 
 (define (explicate_let_in_if e thn els)
   (match e
-    [(or (Bool _) (Int _) (Var _)) (explicate_pred e thn els)]
+    [(or (Bool _) (Int _) (Var _) (Void)) (explicate_pred e thn els)]
     [(Prim op es) (explicate_pred (Prim op es) thn els)]
     [(If _ _ _) (explicate_pred e thn els)]
-    [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]))
+    [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]
+    [(Begin body rhs) (explicate_pred (Begin body rhs) thn els)]))
 
 (define (explicate_pred cnd thn els) 
   (match cnd
@@ -121,13 +245,38 @@
                 (create_block els) (create_block thn))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_let_in_if body thn els))]
     [(Prim 'not (list e)) (explicate_pred e els thn)]
-    [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
+    [(Prim op es) ;#:when (or (eq? op 'eq?) (eq? op '<))
       (IfStmt (Prim op es) (create_block thn) (create_block els))]
     [(Bool b) (if b thn els)]
     [(If cnd^ thn^ els^) (explicate_pred cnd^ 
                           (create_block (explicate_pred thn^ thn els)) 
                           (create_block (explicate_pred els^ thn els)))]
+    [(Begin body rhs) (foldl 
+                        (lambda (e tail)
+                          (explicate_effect e tail))
+                        (explicate_pred rhs thn els) body)]
     [else (error "explicate_pred unhandled case" cnd)]))
+
+(define (explicate_effect e tail)
+  (match e
+    [(or (Allocate _ _) (GlobalValue _) (Collect _)) (Seq e tail)]
+    [(Begin body rhs) (foldl 
+                        (lambda (e t)
+                          (explicate_effect e t))
+                        (explicate_effect rhs tail) body)]
+    [(or (Bool _) (Int _) (Var _) (Void)) tail]
+    [(Prim op es) tail]
+    ; [(If cnd thn els) ]  ;need to complete
+    [(Let x rhs body) (explicate_assign rhs x (explicate_effect body tail))]
+    [(SetBang x rhs) (explicate_assign rhs x tail)]
+    [(WhileLoop cnd body) (let ([label (gensym 'block)])
+                            (begin (set! basic-blocks (cons 
+                                                        (cons label 
+                                                          (explicate_pred cnd 
+                                                            (create_block (explicate_effect body (Goto label)))
+                                                            (create_block tail))) 
+                                                        basic-blocks))
+                              (Goto label)))]))
 
 (define (explicate-wrap body info)
   (let ([start (explicate_tail body)])
@@ -142,19 +291,21 @@
 ; (explicate-control (Program
 ;  '()
 ;  (Let
-;   'g22692
-;   (Prim 'read '())
+;   'g28612
+;   (Int 5)
 ;   (Let
-;    'g22693
-;    (Prim 'read '())
-;    (If
-;     (If
-;      (Prim '< (list (Var 'g22692) (Int 1)))
-;      (Prim 'eq? (list (Var 'g22692) (Int 0)))
-;      (Prim 'eq? (list (Var 'g22692) (Int 2))))
-;     (Prim '+ (list (Var 'g22693) (Int 2)))
-;     (Prim '+ (list (Var 'g22693) (Int 10))))))))
-
+;    'g28613
+;    (Begin
+;     (list
+;      (WhileLoop
+;       (Let 'g28614 (Var 'g28612) (Prim '> (list (Var 'g28614) (Int 0))))
+;       (Begin
+;        '()
+;        (SetBang
+;         'g28612
+;         (Let 'g28615 (Var 'g28612) (Prim '- (list (Var 'g28615) (Int 1))))))))
+;     (Var 'g28612))
+;    (Var 'g28613)))))
 
 (define (select_atm a)
   (match a
@@ -162,7 +313,9 @@
     [(Bool #f) (Imm 0)]
     [(Int n) (Imm n)]
     [(Var x) (Var x)]
-    [(Reg reg) (Reg reg)]))
+    [(Reg reg) (Reg reg)]
+    [(Void) (Imm 0)]
+    [(Imm n) (Imm n)]))
 
 ; atm ::= (Bool bool)
 ; cmp ::= eq?|<|<=|>|>=
@@ -172,10 +325,12 @@
 
 (define (select_stmt e)
   (match e
+    [(Prim 'read arg) (list (Callq 'read_int 0))]
     [(Assign x (Bool #t)) (list (Instr 'movq (list (Imm 1) x)))]
     [(Assign x (Bool #f)) (list (Instr 'movq (list (Imm 0) x)))]
     [(Assign x (Int n)) (list (Instr 'movq (list (Imm n) x)))]
     [(Assign x (Var y)) (list (Instr 'movq (list (Var y) x)))]
+    [(Assign x (Void)) (list (Instr 'movq (list (Imm 0) x)))]
     [(Assign x (Prim '- (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'negq (list x)))]
     [(Assign x (Prim 'not (list x))) (list (Instr 'xorq (list (Imm 1) x)))]
     [(Assign x (Prim 'not (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'xorq (list (Imm 1) x)))]
@@ -527,9 +682,22 @@
     ; ("allocate registers" ,allocate-registers ,interp-x86-0)
     ; ("patch instructions" ,patch-instructions ,interp-x86-0)
     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-    ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
-    ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
-    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
-    ("instruction select" ,select-instructions ,interp-pseudo-x86-1)))
+    ; ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
+    ; ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
+    ; ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
+    ; ("instruction select" ,select-instructions ,interp-pseudo-x86-1)
+    ; ("shrink" ,shrink ,interp-Lwhile ,type-check-Lwhile)
+    ; ("uniquify" ,uniquify ,interp-Lwhile ,type-check-Lwhile)
+    ; ("uncover get!" ,uncover-get! ,interp-Lwhile ,type-check-Lwhile)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile ,type-check-Lwhile)
+    ; ("explicate control" ,explicate-control ,interp-Cwhile ,type-check-Cwhile)
+    ; ("instruction select" ,select-instructions ,interp-pseudo-x86-1)
+    ("shrink" ,shrink ,interp-Lvec ,type-check-Lvec)
+    ("uniquify" ,uniquify ,interp-Lvec ,type-check-Lvec)
+    ("uncover get!" ,uncover-get! ,interp-Lvec ,type-check-Lvec-has-type)
+    ("expose allocation" ,expose-allocation ,interp-Lvec-prime ,type-check-Lvec)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime ,type-check-Lvec)
+    ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
+    ))
 
