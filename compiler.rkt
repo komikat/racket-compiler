@@ -105,8 +105,8 @@
     [(Assign x (Prim '- (list atm))) (list (Instr 'movq (list (select_atm atm) x)) (Instr 'negq (list x)))]
     [(Assign x (Prim '+ (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'addq (list (select_atm atm2) x)))]
     [(Assign x (Prim '- (list atm1 atm2))) (list (Instr 'movq (list (select_atm atm1) x)) (Instr 'subq (list (select_atm atm2) x)))]
-    [(Assign x (Prim 'read arg)) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]
-    ))
+    [(Assign x (Prim 'read arg)) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]))
+    
 
 (define (select_tail e)
   (match e
@@ -195,8 +195,8 @@
     [(Reg r) (set r)]
     [(Var x) (set x)]
     [(Imm m) (set)]
-    [(Deref r i) (set r)]
-    ))
+    [(Deref r i) (set r)]))
+    
 
 (define arg-passing-regs '(rdi rsi rdx rcx r8 r9))
 
@@ -208,9 +208,9 @@
     [(Instr q (list a)) #:when (member q (list 'negq)) (get-loc a)] ;; ASSUMPTION: pushq popq are not reading the locations
     [(Instr 'movq (list _ a2)) (get-loc a2)]
     [(Retq) (set)]
-    ([Callq _ _] caller-save) 
-    ([Jmp _] (set)) ;; TODO
-    ))
+    ([Callq _ _] caller-save)
+    ([Jmp _] (set)))) ;; TODO
+    
 
 ;; locations read by an instruction
 ;; Instr? -> set?
@@ -221,8 +221,8 @@
     [(Instr 'movq (list a1 a2)) (get-loc a1)]
     [(Retq) (set)]
     ([Callq _ arity] (list->set (drop-right arg-passing-regs (- (length arg-passing-regs) arity)))) 
-    ([Jmp 'conclusion] (set 'rax 'rsp))
-    ))
+    ([Jmp 'conclusion] (set 'rax 'rsp))))
+    
 
 ;; (Instr?, set?) -> set?
 (define (live-after-k-1 instr live-after-k)
@@ -235,8 +235,8 @@
 ;; ([Instr?], set?) -> [set?]
 (define (instr-to-live-after instrs initial)
   (map (lambda (l-instr)
-         (foldr live-after-k-1 initial l-instr)) (sub-instr instrs))
-  )
+         (foldr live-after-k-1 initial l-instr)) (sub-instr instrs)))
+  
 
 (define (update-blocks Block-pair)
   (match Block-pair
@@ -255,8 +255,8 @@
   (match arg
     [(Reg r) r]
     [(Var x) x]
-    [(Imm m) '()] ;; TODO
-    ))
+    [(Imm m) '()])) ;; TODO
+    
 ; register allocation
 
 ;; Interference Graph
@@ -276,7 +276,7 @@
                                                       '() (set->list live))]
                      [(Callq _ _) (foldr (lambda (v lst)
                                            (append (list (list v 'rax) (list v 'rcx) (list v 'rdx) (list v 'rsi) 
-                                                         (list v 'rdi) (list v 'r8) (list v 'r9) (list v 'r10) (list v 'r11)) 
+                                                         (list v 'rdi) (list v 'r8) (list v 'r9) (list v 'r10) (list v 'r11))
                                                    lst)) 
                                          '() (set->list live))]
                      [(Instr 'pushq _) '()]
@@ -306,17 +306,29 @@
   (match p
     [(X86Program info body) (X86Program info (build-blocks body))]))
 
-(define color-regs (hash 0 'rcx 1 'rdx 2 'rsi 3 'rdi 4 'r8 5 'r9 6 'r10 7 'rbx 8 'r12 9 'r13))
+
 
 ;; greedy
 ;; graph?, hash? -> [set?]
 (define (update-num-spills spills c)
   (cond [(>= c (num-registers-for-alloc))
          (add1 spills)]
-        [else spills]
-        ))
+        [else spills]))
+        
+
+(define (print-all-edges graph)
+  (let ((seen (make-hash)))  ;; To keep track of seen edges
+    (for-each (lambda (vertex)
+                (for-each (lambda (neighbor)
+                            (unless (hash-ref seen (list neighbor vertex) #f)
+                              (printf "~a -- ~a\n" vertex neighbor)
+                              (hash-set! seen (list vertex neighbor) #t)))
+                          (get-neighbors graph vertex)))
+              (get-vertices graph))))
 
 (define (color-graph graph info)
+  (println "printgraph")
+  (print-graph graph)
   (define locals (map car (dict-ref info 'locals-types)))
   (define num-spills 0)
   (define uncolors (make-hash))
@@ -331,6 +343,8 @@
     (define adj-reg
       (filter (lambda (u) (set-member? registers u))
               (get-neighbors graph x)))
+    (println adj-reg)
+    (println "adj-reg")
     (define adj-colors (list->set (map register->color adj-reg)))
     (hash-set! uncolors x adj-colors)
     (hash-set! pq->node x (pqueue-push! Q x)))
@@ -338,6 +352,9 @@
   
   (while (> (pqueue-count Q) 0)
     (define v (pqueue-pop! Q))
+    (define conflicts (hash-ref uncolors v))
+    (println "conflicts")
+    (println conflicts)
     (define c (for/first ([c (in-naturals)]
                           #:when (not (set-member? (hash-ref uncolors v) c)))
                 c))
@@ -349,51 +366,72 @@
         (hash-set! uncolors u
                    (set-add (hash-ref uncolors u) c))
         (pqueue-decrease-key! Q (hash-ref pq->node u)))))
+
+  (print var->color)
+  (println "===<colors>===")
   (cons var->color num-spills))
 
 ;; take every variable
 ;; get color from color-graph
 ;; get color register (if in bounds)
 ;; else pass to assign stack
-(define (assign-register list-vars color-graph)
-  (define var-to-register-hash (make-hash))
-  (define spill-list '())
-  (for-each (lambda (var)
-              (let ((color (hash-ref color-graph var)))
-                (if (>= color (hash-count color-regs))
-                    (set! spill-list (cons var spill-list))                    
-                    (let ((register (hash-ref color-regs color)))
-                      (hash-set! var-to-register-hash var (Reg register))))))
-            list-vars)
-  (println "===varreg===")
 
-  (println var-to-register-hash)
+(define (get-colors var->color)
+  (sort (remove-duplicates (hash-map var->color (lambda (var color) color))) <))
 
-  (define callee-length (set-count (get-used-callee var-to-register-hash)))
-  (assign-stack spill-list var-to-register-hash callee-length))
 
-;; assign variables in list from info to a hash map with stack locations
-(define (assign-stack list-vars var-register-hashmap callee-length)
-  (let ([var-hashmap var-register-hashmap])
-    (map (lambda (var id)
-           (hash-set! var-hashmap var (Deref 'rbp (- (* 8 (+ callee-length 1 id)))))
-           ) list-vars (range (length list-vars)))
-    var-hashmap))
-
+;(define color->register (hash 0 'rcx 1 'rdx 2 'rsi 3 'rdi 4 'r8 5 'r9 6 'r10 7 'rbx 8 'r12 9 'r13))
 
 (define (get-used-callee var-hashmap)
   (set-remove (list->set (hash-map var-hashmap (lambda (variable location)
                                                  (match location
                                                    [(Reg x) #:when (not (eq? #f (set-member? callee-save x))) x]
-                                                   [else '()]
-                                                   )))) '()))
+                                                   [else '()]))))
+              '()))
 
-(define (get-stack-locations var-hashmap)
-  (set-remove (list->set (hash-map var-hashmap (lambda (variable location)
-                                                 (match location
-                                                   [(Deref 'rbp x) x]
-                                                   [else '()]
-                                                   )))) '()))
+(define x (hash 1 'r12 2 'rbx))
+
+;; get a sorted set of colors used
+;; assign first few colors to the regs
+;; assign num-spills number of colors to the stack
+(define (assign-register var->color)
+  (println var->color)
+  (println "var to color^^")
+  (println registers-for-alloc)
+ 
+  (println "these are the sorted colors")
+  (define sorted-colors (get-colors var->color))
+  (define callees (length (filter (lambda (color) (if (< color 11)
+                                                      (member (color->register color) (set->list callee-save))
+                                                      #f))
+                                  sorted-colors)))
+  (println callees)
+                        
+  (println registers-for-alloc)
+
+  (define color->location (letrec ([regs callees]
+                                   [inc-ret (lambda ()
+                                               (set! regs (add1 regs))
+                                              regs)])
+                            (foldr (lambda (new-color id old-hash)
+                                     (if (>= new-color (num-registers-for-alloc))
+                                         (hash-set old-hash new-color (Deref 'rbp (* -8 (inc-ret))))
+                                         (let [(color (color->register new-color))]
+                                           (hash-set old-hash new-color (Reg color)))))
+                                   (hash)
+                                   sorted-colors
+                                   (build-list (length sorted-colors) (lambda (x) (if (>= x (num-registers-for-alloc))
+                                                                                      (- (* 8 (- x (num-registers-for-alloc))))
+                                                                                      0))))))
+  
+                                 
+
+  (define result-hash (make-hash))
+  (hash-for-each var->color
+                 (lambda (var color)
+                   (hash-set! result-hash var (hash-ref color->location color "No location found"))))
+  result-hash)
+
 
 ;; take variables inside body and then replace them with their
 ;; corresponding entries in the hashmap
@@ -410,16 +448,15 @@
   (match p
     [(X86Program info (list (cons 'start (Block bl-info body))))
      #:when (list? (assoc 'locals-types info))
-     
      (let ([list-vars (map car (cdr (assoc 'locals-types bl-info)))])
        (define colored-graph-result (color-graph (cdr (assoc 'conflicts bl-info)) info))
        (define num-spills (cdr colored-graph-result))
-       (define colored-graph (car colored-graph-result))
-       (let ((var-hashmap (assign-register list-vars colored-graph)))
-         (X86Program (dict-set
-                      (dict-set info 'used-callee (get-used-callee var-hashmap))
-                      'stack-locs num-spills)
-                     (list (cons 'start (Block bl-info (replace-var body var-hashmap)))))))]
+       (define var->color (car colored-graph-result))
+       (define var-hashmap (assign-register var->color))
+       (X86Program (dict-set
+                    (dict-set info 'used-callee (get-used-callee var-hashmap))
+                    'stack-locs num-spills)
+                   (list (cons 'start (Block bl-info (replace-var body var-hashmap))))))]
     [else p]))
 
 
@@ -436,14 +473,15 @@
 ;; add prelude to the body
 (define (preludify used-callee stack-space body)
   (append body (list `(main . ,(Block '() (append (list (Instr 'pushq (list (Reg 'rbp)))
-                                                        (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
-                                                        (Instr 'subq (list (Imm stack-space) (Reg 'rsp))))
+                                                        (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))))
+                                                        
                                                 (set-map used-callee (lambda (r) (Instr 'pushq (list (Reg r)))))
-                                                (list (Jmp 'start))))))))
+                                                (list (Instr 'subq (list (Imm stack-space) (Reg 'rsp)))
+                                                      (Jmp 'start))))))))
 ;; add conclusion to the body
 (define (concludify used-callee stack-space body)
   (append body (list `(conclusion . ,(Block '() (append (list (Instr 'addq (list (Imm stack-space) (Reg 'rsp))))
-                                                        (set-map used-callee (lambda (r) (Instr 'popq (list (Reg r)))))
+                                                        (reverse (set-map used-callee (lambda (r) (Instr 'popq (list (Reg r))))))
                                                         (list  (Instr 'popq (list (Reg 'rbp)))
                                                                (Retq))))))))
 

@@ -6,7 +6,7 @@
 (require "interp-Cvar.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
-(debug-level 1)
+(debug-level 3)
 ;; (AST-output-syntax 'concrete-syntax)
 
 ;; all the files in the tests/ directory with extension ".rkt".
@@ -25,13 +25,17 @@
         all-tests)))
 
 ;; The following tests the intermediate-language outputs of the passes.
-(interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
+; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
+
 
 
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-; (compiler-tests "var" #f compiler-passes "var_test" (tests-for "var"))
+(compiler-tests "var" #f compiler-passes "var_test" (tests-for "var"))
+
+
+
 
 
 
